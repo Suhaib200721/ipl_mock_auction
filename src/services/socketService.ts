@@ -59,6 +59,17 @@ export function getSocket(): Socket {
       reconnectionDelay: 1000,
       timeout: 8000
     });
+
+    // Auto-recover room session on socket reconnect
+    socket.on('connect', () => {
+      if (typeof window !== 'undefined') {
+        const savedRoomCode = sessionStorage.getItem('ipl_room_code');
+        const savedPlayerId = sessionStorage.getItem('ipl_player_id');
+        if (savedRoomCode && savedPlayerId) {
+          socket?.emit('reconnect_player', { roomCode: savedRoomCode, playerId: savedPlayerId });
+        }
+      }
+    });
   }
   return socket;
 }
@@ -416,104 +427,143 @@ export function startMultiplayerAuction(
   });
 }
 
-// 7. PLACE BID
-export function placeMultiplayerBid(
-  timeoutMs: number = 4000
-): Promise<{ success: boolean; error?: string }> {
-  return new Promise((resolve) => {
+export interface PlaceBidPayload {
+  roomCode?: string;
+  playerId?: string;
+  teamId?: string;
+  amount?: number;
+}
+
+// 7. PLACE BID (Multi-client real-time bidding with authoritative server sync)
+export async function placeMultiplayerBid(
+  payload?: PlaceBidPayload,
+  timeoutMs: number = 5000
+): Promise<{ success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }> {
+  try {
     const s = getSocket();
-    let resolved = false;
+    const isConnected = await ensureSocketConnected(3000);
 
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: 'Bid placement timed out.' });
-      }
-    }, timeoutMs);
+    if (!isConnected && !s.connected) {
+      return { success: false, error: 'Lost connection to multiplayer server. Please wait a moment...' };
+    }
 
-    s.emit('place_bid', (res: { success: boolean; error?: string }) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        resolve(res);
-      }
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ success: false, error: 'Bid placement timed out. Please try again.' });
+        }
+      }, timeoutMs);
+
+      s.emit('place_bid', payload || {}, (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res);
+        }
+      });
     });
-  });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error executing bid.' };
+  }
 }
 
 // 8. ADVANCE LOT (Skip Current Player)
-export function advanceMultiplayerLot(
+export async function advanceMultiplayerLot(
+  payload?: { roomCode?: string; playerId?: string },
   timeoutMs: number = 5000
 ): Promise<{ success: boolean; error?: string }> {
-  return new Promise((resolve) => {
+  try {
     const s = getSocket();
-    let resolved = false;
+    await ensureSocketConnected(3000);
 
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: 'Next lot advance timed out.' });
-      }
-    }, timeoutMs);
+    return new Promise((resolve) => {
+      let resolved = false;
 
-    s.emit('next_lot', (res: { success: boolean; error?: string }) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        resolve(res);
-      }
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ success: false, error: 'Next lot advance timed out.' });
+        }
+      }, timeoutMs);
+
+      s.emit('next_lot', payload || {}, (res: { success: boolean; error?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res);
+        }
+      });
     });
-  });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error advancing lot.' };
+  }
 }
 
 // 8B. SKIP ENTIRE SET
-export function skipMultiplayerSet(
+export async function skipMultiplayerSet(
+  payload?: { roomCode?: string; playerId?: string },
   timeoutMs: number = 5000
 ): Promise<{ success: boolean; error?: string }> {
-  return new Promise((resolve) => {
+  try {
     const s = getSocket();
-    let resolved = false;
+    await ensureSocketConnected(3000);
 
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: 'Skip set request timed out.' });
-      }
-    }, timeoutMs);
+    return new Promise((resolve) => {
+      let resolved = false;
 
-    s.emit('skip_set', (res: { success: boolean; error?: string }) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        resolve(res);
-      }
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ success: false, error: 'Skip set request timed out.' });
+        }
+      }, timeoutMs);
+
+      s.emit('skip_set', payload || {}, (res: { success: boolean; error?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res);
+        }
+      });
     });
-  });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error skipping set.' };
+  }
 }
 
 // 9. TOGGLE PAUSE
-export function toggleMultiplayerPause(
+export async function toggleMultiplayerPause(
+  payload?: { roomCode?: string; playerId?: string },
   timeoutMs: number = 4000
 ): Promise<{ success: boolean; error?: string }> {
-  return new Promise((resolve) => {
+  try {
     const s = getSocket();
-    let resolved = false;
+    await ensureSocketConnected(3000);
 
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve({ success: false, error: 'Pause toggle timed out.' });
-      }
-    }, timeoutMs);
+    return new Promise((resolve) => {
+      let resolved = false;
 
-    s.emit('toggle_pause', (res: { success: boolean; error?: string }) => {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        resolve(res);
-      }
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ success: false, error: 'Pause toggle timed out.' });
+        }
+      }, timeoutMs);
+
+      s.emit('toggle_pause', payload || {}, (res: { success: boolean; error?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res);
+        }
+      });
     });
-  });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error toggling pause.' };
+  }
 }
 
 // 10. RECONNECT PLAYER

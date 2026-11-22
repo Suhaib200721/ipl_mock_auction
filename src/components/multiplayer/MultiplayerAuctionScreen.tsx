@@ -44,15 +44,18 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
   const [imageLoaded, setImageLoaded] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState<PlayerCategory | 'All'>('All');
   const [bidError, setBidError] = useState<string | null>(null);
+  const [isBidding, setIsBidding] = useState(false);
   const [inspectSquadsOpen, setInspectSquadsOpen] = useState(false);
 
-  const me = room.players.find(p => p.id === currentUserId);
+  // Robust player & team identity resolution (with session recovery fallback)
+  const effectiveUserId = currentUserId || (typeof window !== 'undefined' ? sessionStorage.getItem('ipl_player_id') || '' : '');
+  const me = room.players.find(p => p.id === effectiveUserId);
   const isHost = me?.isHost || false;
   const myTeam = room.teams.find(t => t.id === me?.teamId);
 
   const currentLot = room.playerPool[room.currentPlayerIndex] || null;
   const highestBidderTeam = room.teams.find(t => t.id === room.highestBidderTeamId) || null;
-  const isMeHighestBidder = room.highestBidderId === currentUserId;
+  const isMeHighestBidder = room.highestBidderId === effectiveUserId || (myTeam != null && room.highestBidderTeamId === myTeam.id);
 
   // Reset imageLoaded on every currentLot change
   useEffect(() => {
@@ -89,19 +92,37 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
     validationReason = val.reason || '';
   }
 
-  // Handle placing real-time multiplayer bid
+  // Handle placing real-time multiplayer bid (with multi-client payload sync)
   const handlePlaceBid = async () => {
+    if (isBidding) return;
+    setIsBidding(true);
     setBidError(null);
-    const res = await placeMultiplayerBid();
-    if (!res.success) {
-      setBidError(res.error || 'Bid rejected by server.');
+
+    try {
+      const res = await placeMultiplayerBid({
+        roomCode: room.roomCode,
+        playerId: effectiveUserId || me?.id,
+        teamId: myTeam?.id,
+        amount: nextBid
+      });
+
+      if (!res.success) {
+        setBidError(res.error || 'Bid rejected by server.');
+      }
+    } catch (err: any) {
+      setBidError(err?.message || 'Error executing bid.');
+    } finally {
+      setIsBidding(false);
     }
   };
 
   // Host advances lot (Skip Current Player)
   const handleNextLot = async () => {
     setBidError(null);
-    const res = await advanceMultiplayerLot();
+    const res = await advanceMultiplayerLot({
+      roomCode: room.roomCode,
+      playerId: effectiveUserId || me?.id
+    });
     if (!res.success) {
       setBidError(res.error || 'Failed to advance lot.');
     }
@@ -110,7 +131,10 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
   // Host skips entire set
   const handleSkipSet = async () => {
     setBidError(null);
-    const res = await skipMultiplayerSet();
+    const res = await skipMultiplayerSet({
+      roomCode: room.roomCode,
+      playerId: effectiveUserId || me?.id
+    });
     if (!res.success) {
       setBidError(res.error || 'Failed to skip set.');
     }
@@ -119,7 +143,10 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
   // Host toggles pause
   const handleTogglePause = async () => {
     setBidError(null);
-    const res = await toggleMultiplayerPause();
+    const res = await toggleMultiplayerPause({
+      roomCode: room.roomCode,
+      playerId: effectiveUserId || me?.id
+    });
     if (!res.success) {
       setBidError(res.error || 'Failed to toggle pause.');
     }
@@ -483,25 +510,34 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
                 )}
 
                 <button
-                  disabled={!canBid}
+                  disabled={!canBid || isBidding}
                   onClick={handlePlaceBid}
                   style={{
-                    boxShadow: canBid ? '0 0 25px rgba(234, 179, 8, 0.35)' : 'none'
+                    boxShadow: canBid && !isBidding ? '0 0 25px rgba(234, 179, 8, 0.35)' : 'none'
                   }}
                   className={`w-full py-4 px-6 rounded-xl font-black text-base md:text-lg uppercase tracking-wider flex items-center justify-center gap-3 transition-all duration-200 ${
-                    canBid
+                    canBid && !isBidding
                       ? 'bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-500 hover:from-amber-300 hover:to-yellow-200 text-slate-950 cursor-pointer scale-100 hover:scale-[1.02] active:scale-95'
                       : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60'
                   }`}
                 >
-                  <Gavel className="w-6 h-6" />
-                  <span>
-                    {isMeHighestBidder
-                      ? 'YOU HOLD HIGHEST BID'
-                      : room.currentBid === 0
-                      ? `BID BASE PRICE: ${formatCurrency(currentLot.basePrice)}`
-                      : `BID ${formatCurrency(nextBid)} (RESETS 15S)`}
-                  </span>
+                  {isBidding ? (
+                    <>
+                      <Sparkles className="w-6 h-6 animate-spin text-amber-400" />
+                      <span>SUBMITTING BID...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Gavel className="w-6 h-6" />
+                      <span>
+                        {isMeHighestBidder
+                          ? 'YOU HOLD HIGHEST BID'
+                          : room.currentBid === 0
+                          ? `BID BASE PRICE: ${formatCurrency(currentLot.basePrice)}`
+                          : `BID ${formatCurrency(nextBid)} (RESETS 15S)`}
+                      </span>
+                    </>
+                  )}
                 </button>
               </div>
             </>

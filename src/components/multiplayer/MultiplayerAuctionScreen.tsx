@@ -122,7 +122,7 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
       const res = await placeMultiplayerBid({
         roomCode: room.roomCode,
         playerId: effectiveUserId || me?.id,
-        teamId: myTeam?.id,
+        teamId: myTeam?.id || me?.teamId || undefined,
         amount: nextBid
       });
 

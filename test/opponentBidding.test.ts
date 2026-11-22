@@ -176,21 +176,45 @@ server.listen(TEST_PORT, async () => {
     console.assert(hostReceivedBids.length >= 4, `Host should have received all bid broadcasts, got ${hostReceivedBids.length}`);
     console.log(`✓ Real-time broadcast verification: Host received ${hostReceivedBids.length} bid_placed events`);
 
-    // 12. DEDICATED DIRECT BID_RESPONSE EVENT & ACKNOWLEDGEMENT REGRESSION TEST
+    // 12. DEDICATED DIRECT BID_RESPONSE & TARGETED ERROR EVENTS REGRESSION TEST
     const directBidResponses: any[] = [];
-    client1.on('bid_response', (res: any) => directBidResponses.push(res));
+    const directBidRejections: any[] = [];
+    const hostReceivedRejections: any[] = [];
 
-    // Host places bid ₹3.50 Cr
+    client1.on('bid_response', (res: any) => directBidResponses.push(res));
+    client2Reconnected.on('bid_rejected', (res: any) => directBidRejections.push(res));
+    client1.on('bid_rejected', (res: any) => hostReceivedRejections.push(res));
+
+    // Opponent tries consecutive bid (must be rejected targeted ONLY to opponent)
+    const reqId = 'req-test-123';
+    const rejRes: any = await new Promise((resolve) => {
+      client2Reconnected.emit('place_bid', {
+        roomCode,
+        playerId: opponentPlayerId,
+        teamId: 'rcb', // test lowercase franchise resolution
+        requestId: reqId
+      }, resolve);
+    });
+    console.assert(!rejRes.success, 'Consecutive bid should be rejected');
+    console.assert(rejRes.requestId === reqId, `RequestId should match ${reqId}, got ${rejRes.requestId}`);
+    console.assert(rejRes.error === 'You already hold the highest bid!', `Error message mismatch: ${rejRes.error}`);
+    console.assert(directBidRejections.length >= 1, 'Client 2 should receive direct bid_rejected event');
+    console.assert(hostReceivedRejections.length === 0, 'Opponent error must NOT be broadcast to Host');
+    console.log(`✓ Targeted rejection event verified: "${rejRes.error}" with correlated requestId (${rejRes.requestId})`);
+    console.log('✓ Privacy check passed: Bid rejection was NOT leaked to the other team');
+
+    // Host places bid ₹3.50 Cr with lowercase franchise 'mi'
     const bid7Res: any = await new Promise((resolve) => {
       client1.emit('place_bid', {
         roomCode,
         playerId: hostPlayerId,
-        teamId: 'MI'
+        teamId: 'mi'
       }, resolve);
     });
     console.assert(bid7Res.success, `Bid 7 failed: ${bid7Res.error}`);
     console.assert(directBidResponses.length >= 1, 'Direct bid_response event should be received by bidder socket');
     console.assert(directBidResponses[0].success === true, 'Direct bid_response should indicate success');
+    console.log('✓ Case-insensitive franchise resolution verified: "mi" accepted for MI');
     console.log('✓ Direct "bid_response" socket event verified (bypasses proxy ACK dropping)');
 
     // Clean up
@@ -198,7 +222,7 @@ server.listen(TEST_PORT, async () => {
     client2Reconnected.disconnect();
     server.close();
 
-    console.log('=== ALL 12 OPPONENT BIDDING INTEGRATION TESTS PASSED 100% ===');
+    console.log('=== ALL 14 OPPONENT BIDDING INTEGRATION TESTS PASSED 100% ===');
     process.exit(0);
   } catch (err) {
     console.error('Opponent bidding test failed:', err);

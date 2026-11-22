@@ -545,22 +545,46 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         }
       }
 
+      const pId = data.playerId || currentPlayerId;
+      let player: MultiplayerPlayer | undefined;
+
       const safeRespond = (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
         const time = new Date().toISOString();
+        const responsePayload = {
+          ...res,
+          requestId: data.requestId,
+          teamId: data.teamId,
+          playerId: pId
+        };
         console.log(`[SERVER BID ${time}] safeRespond for socket=${socket.id}, success=${res.success}, error=${res.error || 'none'}`);
 
-        // 1. Direct Socket Event Response to Sender (guarantees delivery even if ack packet is lost across proxies)
+        // 1. Direct Socket Event Response to Sender
         try {
-          socket.emit('bid_response', res);
+          socket.emit('bid_response', responsePayload);
+          if (res.success) {
+            socket.emit('bid_accepted', responsePayload);
+          } else {
+            socket.emit('bid_rejected', responsePayload);
+          }
           console.log(`[SERVER BID ${time}] Emitted direct 'bid_response' to socket=${socket.id}`);
         } catch (e) {
           console.error(`[SERVER BID ${time}] Error emitting bid_response:`, e);
         }
 
-        // 2. Acknowledgement Callback to Sender
+        // 2. Targeted fallback to player's known socket ID (in case socket reconnected during transit)
+        if (player && player.socketId && player.socketId !== socket.id) {
+          try {
+            io.to(player.socketId).emit('bid_response', responsePayload);
+            io.to(player.socketId).emit(res.success ? 'bid_accepted' : 'bid_rejected', responsePayload);
+          } catch (e) {
+            console.error(`[SERVER BID ${time}] Error emitting targeted response to player.socketId:`, e);
+          }
+        }
+
+        // 3. Acknowledgement Callback to Sender
         if (typeof callback === 'function') {
           try {
-            callback(res);
+            callback(responsePayload);
             console.log(`[SERVER BID ${time}] Invoked ACK callback for socket=${socket.id}`);
           } catch (e) {
             console.error(`[SERVER BID ${time}] Error invoking place_bid callback:`, e);
@@ -608,17 +632,18 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           return safeRespond({ success: false, error: 'Bidding window has expired.' });
         }
 
-        // Find player by ID, team, or socket ID
-        let player = room.players.find(p => p.id === pId);
-        if (!player && data.teamId) {
-          player = room.players.find(p => p.teamId === data.teamId);
+        // Find player by ID, team, or socket ID (with case-insensitive franchise matching)
+        const targetTeamId = (data.teamId || '').trim().toUpperCase();
+        player = room.players.find(p => p.id === pId);
+        if (!player && targetTeamId) {
+          player = room.players.find(p => (p.teamId || '').toUpperCase() === targetTeamId);
         }
         if (!player) {
           player = room.players.find(p => p.socketId === socket.id);
         }
 
         if (!player || !player.teamId) {
-          console.warn(`[SERVER BID REJECTED ${time}] Player ${pId} has no assigned team in room ${code}.`);
+          console.warn(`[SERVER BID REJECTED ${time}] Player ${pId} (team=${targetTeamId}) has no assigned team in room ${code}.`);
           return safeRespond({ success: false, error: 'You do not own an assigned franchise in this room.' });
         }
 
@@ -627,9 +652,10 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         player.isConnected = true;
         currentPlayerId = player.id;
 
-        const team = room.teams.find(t => t.id === player.teamId);
+        const effectiveTeamId = (player.teamId || targetTeamId).toUpperCase();
+        const team = room.teams.find(t => t.id.toUpperCase() === effectiveTeamId);
         if (!team) {
-          console.warn(`[SERVER BID REJECTED ${time}] Franchise "${player.teamId}" not found in room roster.`);
+          console.warn(`[SERVER BID REJECTED ${time}] Franchise "${effectiveTeamId}" not found in room roster.`);
           return safeRespond({ success: false, error: 'Franchise not found in room roster.' });
         }
 

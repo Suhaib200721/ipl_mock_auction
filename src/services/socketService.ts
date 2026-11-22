@@ -457,9 +457,10 @@ export interface PlaceBidPayload {
   playerId?: string;
   teamId?: string;
   amount?: number;
+  requestId?: string;
 }
 
-// 7. PLACE BID (Multi-client real-time bidding with multi-channel acknowledgement & detailed logging)
+// 7. PLACE BID (Multi-client real-time bidding with multi-channel targeted acknowledgement & instant error propagation)
 export async function placeMultiplayerBid(
   payload?: PlaceBidPayload,
   timeoutMs: number = 8000
@@ -468,12 +469,14 @@ export async function placeMultiplayerBid(
   try {
     const s = getSocket();
     const isConnected = await ensureSocketConnected(3000);
+    const requestId = payload?.requestId || `bid_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const reqPayload: PlaceBidPayload = { ...payload, requestId };
 
     console.log(`[BID CLIENT ${startTime}][ENTER]`, {
       socketId: s.id,
       connected: s.connected,
       backendUrl: getSocketUrl(),
-      payload
+      reqPayload
     });
 
     if (!isConnected && !s.connected) {
@@ -484,13 +487,20 @@ export async function placeMultiplayerBid(
     return new Promise((resolve) => {
       let resolved = false;
 
+      const cleanup = () => {
+        s.off('bid_response', onBidResponse);
+        s.off('bid_rejected', onBidRejected);
+        s.off('bid_accepted', onBidAccepted);
+        s.off('bid_placed', onBidPlacedBroadcast);
+        s.off('room_updated', onRoomUpdatedBroadcast);
+        s.off('disconnect', onDisconnect);
+      };
+
       const finish = (channel: string, result: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
         if (!resolved) {
           resolved = true;
           clearTimeout(timer);
-          s.off('bid_response', onBidResponse);
-          s.off('bid_placed', onBidPlacedBroadcast);
-          s.off('room_updated', onRoomUpdatedBroadcast);
+          cleanup();
           console.log(`[BID CLIENT ${new Date().toISOString()}][RESOLVED via ${channel}]`, result);
           resolve(result);
         }
@@ -500,52 +510,86 @@ export async function placeMultiplayerBid(
         console.warn(`[BID CLIENT ${new Date().toISOString()}][TIMEOUT after ${timeoutMs}ms]`, {
           socketId: s.id,
           connected: s.connected,
-          payload
+          reqPayload
         });
         finish('TIMEOUT', { success: false, error: 'Bid placement timed out. Please try again.' });
       }, timeoutMs);
 
-      // Channel 1: Dedicated direct bid response event (bypasses proxy ACK packet dropping)
+      // Channel 1A: Dedicated direct bid response event (covers both accepted and rejected)
       const onBidResponse = (res: any) => {
-        console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_response]`, res);
         if (res && typeof res === 'object') {
+          if (res.requestId && res.requestId !== requestId) return;
+          console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_response]`, res);
           finish('direct_bid_response', res);
         }
       };
-      s.once('bid_response', onBidResponse);
+      s.on('bid_response', onBidResponse);
 
-      // Channel 2: Room broadcast detection (if server accepted & published bid to the room)
+      // Channel 1B: Immediate targeted rejection event (instantly shows server validation errors)
+      const onBidRejected = (res: any) => {
+        if (res && typeof res === 'object') {
+          if (res.requestId && res.requestId !== requestId) return;
+          console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_rejected]`, res);
+          finish('direct_bid_rejected', res);
+        }
+      };
+      s.on('bid_rejected', onBidRejected);
+
+      // Channel 1C: Targeted acceptance event
+      const onBidAccepted = (res: any) => {
+        if (res && typeof res === 'object') {
+          if (res.requestId && res.requestId !== requestId) return;
+          console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_accepted]`, res);
+          finish('direct_bid_accepted', res);
+        }
+      };
+      s.on('bid_accepted', onBidAccepted);
+
+      // Channel 2: Room broadcast detection (if server accepted & published this new bid to the room)
       const onBidPlacedBroadcast = (data: { bid: BidRecord; room: MultiplayerRoomState }) => {
-        console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_placed broadcast]`, data?.bid);
-        if (
-          payload &&
-          data?.bid &&
-          ((payload.teamId && data.bid.teamId === payload.teamId) ||
-           (payload.playerId && data.room?.highestBidderId === payload.playerId))
-        ) {
-          finish('bid_placed_broadcast', { success: true, bid: data.bid, room: data.room });
+        if (data?.bid) {
+          const normReqTeam = (reqPayload.teamId || '').trim().toUpperCase();
+          const normBidTeam = (data.bid.teamId || '').trim().toUpperCase();
+          const matchTeam = normReqTeam && normBidTeam === normReqTeam;
+          const matchPlayer = reqPayload.playerId && data.room?.highestBidderId === reqPayload.playerId;
+          const matchAmount = !reqPayload.amount || data.bid.amount >= reqPayload.amount;
+
+          if ((matchTeam || matchPlayer) && matchAmount) {
+            console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_placed match]`, data.bid);
+            finish('bid_placed_broadcast', { success: true, bid: data.bid, room: data.room });
+          }
         }
       };
       s.on('bid_placed', onBidPlacedBroadcast);
 
-      // Channel 3: Room updated state detection
+      // Channel 3: Room updated state detection (only for newly advanced highest bid amount)
       const onRoomUpdatedBroadcast = (updatedRoom: MultiplayerRoomState) => {
-        if (
-          payload &&
-          updatedRoom &&
-          ((payload.teamId && updatedRoom.highestBidderTeamId === payload.teamId) ||
-           (payload.playerId && updatedRoom.highestBidderId === payload.playerId))
-        ) {
-          console.log(`[BID CLIENT ${new Date().toISOString()}][RECV room_updated highestBidder match]`);
-          finish('room_updated_match', { success: true, room: updatedRoom });
+        if (updatedRoom) {
+          const normReqTeam = (reqPayload.teamId || '').trim().toUpperCase();
+          const normRoomTeam = (updatedRoom.highestBidderTeamId || '').trim().toUpperCase();
+          const matchTeam = normReqTeam && normRoomTeam === normReqTeam;
+          const matchPlayer = reqPayload.playerId && updatedRoom.highestBidderId === reqPayload.playerId;
+          const matchAmount = !reqPayload.amount || updatedRoom.currentBid >= reqPayload.amount;
+
+          if ((matchTeam || matchPlayer) && matchAmount) {
+            console.log(`[BID CLIENT ${new Date().toISOString()}][RECV room_updated highestBidder match]`);
+            finish('room_updated_match', { success: true, room: updatedRoom });
+          }
         }
       };
       s.on('room_updated', onRoomUpdatedBroadcast);
 
+      // Channel 4: Abrupt disconnect handling (cleans up immediately)
+      const onDisconnect = (reason: any) => {
+        console.warn(`[BID CLIENT ${new Date().toISOString()}][DISCONNECT during bid]`, reason);
+        finish('disconnect', { success: false, error: 'Socket disconnected while processing bid.' });
+      };
+      s.once('disconnect', onDisconnect);
+
       console.log(`[BID CLIENT ${startTime}][EMIT place_bid] Emitting to server...`);
 
-      // Channel 4: Standard Socket.IO callback acknowledgement
-      s.emit('place_bid', payload || {}, (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
+      // Channel 5: Standard Socket.IO callback acknowledgement
+      s.emit('place_bid', reqPayload, (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
         console.log(`[BID CLIENT ${new Date().toISOString()}][RECV callback ack]`, res);
         if (res && typeof res === 'object') {
           finish('callback_ack', res);

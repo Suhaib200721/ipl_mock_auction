@@ -66,7 +66,7 @@ export function getSocket(): Socket {
         const savedRoomCode = sessionStorage.getItem('ipl_room_code');
         const savedPlayerId = sessionStorage.getItem('ipl_player_id');
         if (savedRoomCode && savedPlayerId) {
-          socket?.emit('reconnect_player', { roomCode: savedRoomCode, playerId: savedPlayerId });
+          socket?.emit('reconnect_player', { roomCode: savedRoomCode, playerId: savedPlayerId }, () => {});
         }
       }
     });

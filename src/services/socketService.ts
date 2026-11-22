@@ -434,10 +434,10 @@ export interface PlaceBidPayload {
   amount?: number;
 }
 
-// 7. PLACE BID (Multi-client real-time bidding with authoritative server sync)
+// 7. PLACE BID (Multi-client real-time bidding with multi-channel acknowledgement)
 export async function placeMultiplayerBid(
   payload?: PlaceBidPayload,
-  timeoutMs: number = 5000
+  timeoutMs: number = 8000
 ): Promise<{ success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }> {
   try {
     const s = getSocket();
@@ -450,18 +450,59 @@ export async function placeMultiplayerBid(
     return new Promise((resolve) => {
       let resolved = false;
 
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          resolve({ success: false, error: 'Bid placement timed out. Please try again.' });
-        }
-      }, timeoutMs);
-
-      s.emit('place_bid', payload || {}, (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
+      const finish = (result: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
         if (!resolved) {
           resolved = true;
           clearTimeout(timer);
-          resolve(res);
+          s.off('bid_response', onBidResponse);
+          s.off('bid_placed', onBidPlacedBroadcast);
+          s.off('room_updated', onRoomUpdatedBroadcast);
+          resolve(result);
+        }
+      };
+
+      const timer = setTimeout(() => {
+        finish({ success: false, error: 'Bid placement timed out. Please try again.' });
+      }, timeoutMs);
+
+      // Channel 1: Dedicated direct bid response event (bypasses proxy ACK packet dropping)
+      const onBidResponse = (res: any) => {
+        if (res && typeof res === 'object') {
+          finish(res);
+        }
+      };
+      s.once('bid_response', onBidResponse);
+
+      // Channel 2: Room broadcast detection (if server accepted & published bid to the room)
+      const onBidPlacedBroadcast = (data: { bid: BidRecord; room: MultiplayerRoomState }) => {
+        if (
+          payload &&
+          data?.bid &&
+          ((payload.teamId && data.bid.teamId === payload.teamId) ||
+           (payload.playerId && data.room?.highestBidderId === payload.playerId))
+        ) {
+          finish({ success: true, bid: data.bid, room: data.room });
+        }
+      };
+      s.on('bid_placed', onBidPlacedBroadcast);
+
+      // Channel 3: Room updated state detection
+      const onRoomUpdatedBroadcast = (updatedRoom: MultiplayerRoomState) => {
+        if (
+          payload &&
+          updatedRoom &&
+          ((payload.teamId && updatedRoom.highestBidderTeamId === payload.teamId) ||
+           (payload.playerId && updatedRoom.highestBidderId === payload.playerId))
+        ) {
+          finish({ success: true, room: updatedRoom });
+        }
+      };
+      s.on('room_updated', onRoomUpdatedBroadcast);
+
+      // Channel 4: Standard Socket.IO callback acknowledgement
+      s.emit('place_bid', payload || {}, (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
+        if (res && typeof res === 'object') {
+          finish(res);
         }
       });
     });

@@ -176,12 +176,29 @@ server.listen(TEST_PORT, async () => {
     console.assert(hostReceivedBids.length >= 4, `Host should have received all bid broadcasts, got ${hostReceivedBids.length}`);
     console.log(`✓ Real-time broadcast verification: Host received ${hostReceivedBids.length} bid_placed events`);
 
+    // 12. DEDICATED DIRECT BID_RESPONSE EVENT & ACKNOWLEDGEMENT REGRESSION TEST
+    const directBidResponses: any[] = [];
+    client1.on('bid_response', (res: any) => directBidResponses.push(res));
+
+    // Host places bid ₹3.50 Cr
+    const bid7Res: any = await new Promise((resolve) => {
+      client1.emit('place_bid', {
+        roomCode,
+        playerId: hostPlayerId,
+        teamId: 'MI'
+      }, resolve);
+    });
+    console.assert(bid7Res.success, `Bid 7 failed: ${bid7Res.error}`);
+    console.assert(directBidResponses.length >= 1, 'Direct bid_response event should be received by bidder socket');
+    console.assert(directBidResponses[0].success === true, 'Direct bid_response should indicate success');
+    console.log('✓ Direct "bid_response" socket event verified (bypasses proxy ACK dropping)');
+
     // Clean up
     client1.disconnect();
     client2Reconnected.disconnect();
     server.close();
 
-    console.log('=== ALL 11 OPPONENT BIDDING INTEGRATION TESTS PASSED 100% ===');
+    console.log('=== ALL 12 OPPONENT BIDDING INTEGRATION TESTS PASSED 100% ===');
     process.exit(0);
   } catch (err) {
     console.error('Opponent bidding test failed:', err);

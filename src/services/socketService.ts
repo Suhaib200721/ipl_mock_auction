@@ -3,6 +3,13 @@ import type { MultiplayerRoomState, BidRecord, MultiplayerResolvedLot, Multiplay
 
 let socket: Socket | null = null;
 
+// Ensure persistent browser window singleton to prevent Vite HMR / React re-evaluation from duplicating sockets
+declare global {
+  interface Window {
+    __IPL_SOCKET__?: Socket;
+  }
+}
+
 export function getSocketUrl(): string {
   // 1. If configured explicitly via Vite env (Vercel deployment)
   if (typeof import.meta !== 'undefined' && import.meta.env) {
@@ -24,10 +31,9 @@ export function getSocketUrl(): string {
     const port = window.location.port;
 
     // When running on local Vite dev server (port 5173, 5174, 3000, 4173), connect directly to local backend port 3001
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      if (port === '5173' || port === '5174' || port === '3000' || port === '4173') {
-        return `http://${hostname}:3001`;
-      }
+    // Supports localhost, 127.0.0.1, or local LAN IPs (192.168.*, 10.*, 172.*)
+    if (port === '5173' || port === '5174' || port === '3000' || port === '4173') {
+      return `http://${hostname}:3001`;
     }
 
     // When served directly or in fullstack production
@@ -49,8 +55,14 @@ export function getServerHostDisplay(): string {
 }
 
 export function getSocket(): Socket {
+  if (typeof window !== 'undefined' && window.__IPL_SOCKET__) {
+    socket = window.__IPL_SOCKET__;
+    return socket;
+  }
+
   if (!socket) {
     const url = getSocketUrl();
+    console.log(`[SOCKET INIT ${new Date().toISOString()}] Initializing Socket.IO connection to: ${url}`);
     socket = io(url, {
       autoConnect: true,
       transports: ['websocket', 'polling'],
@@ -60,15 +72,28 @@ export function getSocket(): Socket {
       timeout: 8000
     });
 
-    // Auto-recover room session on socket reconnect
+    if (typeof window !== 'undefined') {
+      window.__IPL_SOCKET__ = socket;
+    }
+
     socket.on('connect', () => {
+      console.log(`[SOCKET CONNECTED ${new Date().toISOString()}] ID=${socket?.id}, URL=${url}`);
       if (typeof window !== 'undefined') {
         const savedRoomCode = sessionStorage.getItem('ipl_room_code');
         const savedPlayerId = sessionStorage.getItem('ipl_player_id');
         if (savedRoomCode && savedPlayerId) {
+          console.log(`[SOCKET AUTO-RECONNECT ${new Date().toISOString()}] Restoring room=${savedRoomCode}, player=${savedPlayerId}`);
           socket?.emit('reconnect_player', { roomCode: savedRoomCode, playerId: savedPlayerId }, () => {});
         }
       }
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.warn(`[SOCKET DISCONNECTED ${new Date().toISOString()}] Reason=${reason}`);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error(`[SOCKET CONNECT_ERROR ${new Date().toISOString()}]`, err.message);
     });
   }
   return socket;
@@ -434,54 +459,71 @@ export interface PlaceBidPayload {
   amount?: number;
 }
 
-// 7. PLACE BID (Multi-client real-time bidding with multi-channel acknowledgement)
+// 7. PLACE BID (Multi-client real-time bidding with multi-channel acknowledgement & detailed logging)
 export async function placeMultiplayerBid(
   payload?: PlaceBidPayload,
   timeoutMs: number = 8000
 ): Promise<{ success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }> {
+  const startTime = new Date().toISOString();
   try {
     const s = getSocket();
     const isConnected = await ensureSocketConnected(3000);
 
+    console.log(`[BID CLIENT ${startTime}][ENTER]`, {
+      socketId: s.id,
+      connected: s.connected,
+      backendUrl: getSocketUrl(),
+      payload
+    });
+
     if (!isConnected && !s.connected) {
+      console.warn(`[BID CLIENT ${startTime}][ABORT] Socket disconnected and failed to reconnect.`);
       return { success: false, error: 'Lost connection to multiplayer server. Please wait a moment...' };
     }
 
     return new Promise((resolve) => {
       let resolved = false;
 
-      const finish = (result: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
+      const finish = (channel: string, result: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
         if (!resolved) {
           resolved = true;
           clearTimeout(timer);
           s.off('bid_response', onBidResponse);
           s.off('bid_placed', onBidPlacedBroadcast);
           s.off('room_updated', onRoomUpdatedBroadcast);
+          console.log(`[BID CLIENT ${new Date().toISOString()}][RESOLVED via ${channel}]`, result);
           resolve(result);
         }
       };
 
       const timer = setTimeout(() => {
-        finish({ success: false, error: 'Bid placement timed out. Please try again.' });
+        console.warn(`[BID CLIENT ${new Date().toISOString()}][TIMEOUT after ${timeoutMs}ms]`, {
+          socketId: s.id,
+          connected: s.connected,
+          payload
+        });
+        finish('TIMEOUT', { success: false, error: 'Bid placement timed out. Please try again.' });
       }, timeoutMs);
 
       // Channel 1: Dedicated direct bid response event (bypasses proxy ACK packet dropping)
       const onBidResponse = (res: any) => {
+        console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_response]`, res);
         if (res && typeof res === 'object') {
-          finish(res);
+          finish('direct_bid_response', res);
         }
       };
       s.once('bid_response', onBidResponse);
 
       // Channel 2: Room broadcast detection (if server accepted & published bid to the room)
       const onBidPlacedBroadcast = (data: { bid: BidRecord; room: MultiplayerRoomState }) => {
+        console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_placed broadcast]`, data?.bid);
         if (
           payload &&
           data?.bid &&
           ((payload.teamId && data.bid.teamId === payload.teamId) ||
            (payload.playerId && data.room?.highestBidderId === payload.playerId))
         ) {
-          finish({ success: true, bid: data.bid, room: data.room });
+          finish('bid_placed_broadcast', { success: true, bid: data.bid, room: data.room });
         }
       };
       s.on('bid_placed', onBidPlacedBroadcast);
@@ -494,19 +536,24 @@ export async function placeMultiplayerBid(
           ((payload.teamId && updatedRoom.highestBidderTeamId === payload.teamId) ||
            (payload.playerId && updatedRoom.highestBidderId === payload.playerId))
         ) {
-          finish({ success: true, room: updatedRoom });
+          console.log(`[BID CLIENT ${new Date().toISOString()}][RECV room_updated highestBidder match]`);
+          finish('room_updated_match', { success: true, room: updatedRoom });
         }
       };
       s.on('room_updated', onRoomUpdatedBroadcast);
 
+      console.log(`[BID CLIENT ${startTime}][EMIT place_bid] Emitting to server...`);
+
       // Channel 4: Standard Socket.IO callback acknowledgement
       s.emit('place_bid', payload || {}, (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
+        console.log(`[BID CLIENT ${new Date().toISOString()}][RECV callback ack]`, res);
         if (res && typeof res === 'object') {
-          finish(res);
+          finish('callback_ack', res);
         }
       });
     });
   } catch (err: any) {
+    console.error(`[BID CLIENT ${new Date().toISOString()}][EXCEPTION]`, err);
     return { success: false, error: err?.message || 'Error executing bid.' };
   }
 }

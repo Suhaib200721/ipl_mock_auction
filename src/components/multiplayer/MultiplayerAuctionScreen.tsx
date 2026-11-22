@@ -106,6 +106,18 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
     setIsBidding(true);
     setBidError(null);
 
+    const timestamp = new Date().toISOString();
+    console.log(`[BID UI ${timestamp}][CLICK] Bid button clicked:`, {
+      effectiveUserId,
+      playerId: me?.id,
+      teamId: myTeam?.id,
+      roomCode: room.roomCode,
+      nextBid,
+      currentBid: room.currentBid,
+      highestBidderId: room.highestBidderId,
+      highestBidderTeamId: room.highestBidderTeamId
+    });
+
     try {
       const res = await placeMultiplayerBid({
         roomCode: room.roomCode,
@@ -114,10 +126,14 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
         amount: nextBid
       });
 
+      console.log(`[BID UI ${new Date().toISOString()}][RESULT] placeMultiplayerBid resolved:`, res);
+
       if (!res.success) {
+        console.warn(`[BID UI ${new Date().toISOString()}][REJECTED] Bid error:`, res.error);
         setBidError(res.error || 'Bid rejected by server.');
       }
     } catch (err: any) {
+      console.error(`[BID UI ${new Date().toISOString()}][ERROR]`, err);
       setBidError(err?.message || 'Error executing bid.');
     } finally {
       setIsBidding(false);

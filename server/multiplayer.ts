@@ -33,6 +33,8 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
     let currentRoomCode: string | null = null;
     let currentPlayerId: string | null = null;
 
+    console.log(`[SERVER SOCKET ${new Date().toISOString()}] CONNECT: socket=${socket.id}, transport=${socket.conn.transport.name}`);
+
     // 1. CREATE AUCTION ROOM
     socket.on('create_room', (data: { hostName: string }, callback?: (res: { success: boolean; room?: MultiplayerRoomState; error?: string }) => void) => {
       try {
@@ -544,37 +546,43 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
       }
 
       const safeRespond = (res: { success: boolean; error?: string; bid?: BidRecord; room?: MultiplayerRoomState }) => {
+        const time = new Date().toISOString();
+        console.log(`[SERVER BID ${time}] safeRespond for socket=${socket.id}, success=${res.success}, error=${res.error || 'none'}`);
+
         // 1. Direct Socket Event Response to Sender (guarantees delivery even if ack packet is lost across proxies)
         try {
           socket.emit('bid_response', res);
+          console.log(`[SERVER BID ${time}] Emitted direct 'bid_response' to socket=${socket.id}`);
         } catch (e) {
-          console.error('[BID] Error emitting bid_response:', e);
+          console.error(`[SERVER BID ${time}] Error emitting bid_response:`, e);
         }
 
         // 2. Acknowledgement Callback to Sender
         if (typeof callback === 'function') {
           try {
             callback(res);
+            console.log(`[SERVER BID ${time}] Invoked ACK callback for socket=${socket.id}`);
           } catch (e) {
-            console.error('[BID] Error invoking place_bid callback:', e);
+            console.error(`[SERVER BID ${time}] Error invoking place_bid callback:`, e);
           }
         }
       };
 
       try {
+        const time = new Date().toISOString();
         const code = (data.roomCode || currentRoomCode || '').trim().toUpperCase();
         const pId = data.playerId || currentPlayerId;
 
-        console.log(`[MULTIPLAYER BID] Request from socket ${socket.id}: room=${code}, player=${pId}, team=${data.teamId}, amount=${data.amount}`);
+        console.log(`[SERVER BID ${time}] RECV place_bid: socket=${socket.id}, room=${code}, player=${pId}, team=${data.teamId}, amount=${data.amount}`);
 
         if (!code) {
-          console.warn(`[MULTIPLAYER BID REJECTED] Socket ${socket.id} is not connected to a room.`);
+          console.warn(`[SERVER BID REJECTED ${time}] Socket ${socket.id} has no active room code.`);
           return safeRespond({ success: false, error: 'Not connected to an active room.' });
         }
 
         const room = rooms.get(code);
         if (!room) {
-          console.warn(`[MULTIPLAYER BID REJECTED] Room "${code}" not found.`);
+          console.warn(`[SERVER BID REJECTED ${time}] Room "${code}" not found.`);
           return safeRespond({ success: false, error: `Auction room "${code}" not found.` });
         }
 
@@ -586,15 +594,17 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         }
 
         if (room.status !== 'auction') {
-          console.warn(`[MULTIPLAYER BID REJECTED] Room "${code}" status is "${room.status}", not "auction".`);
+          console.warn(`[SERVER BID REJECTED ${time}] Room "${code}" status is "${room.status}", not "auction".`);
           return safeRespond({ success: false, error: 'Auction is not currently in progress.' });
         }
 
         if (room.isPaused) {
+          console.warn(`[SERVER BID REJECTED ${time}] Auction is paused by host.`);
           return safeRespond({ success: false, error: 'Auction is currently paused by host.' });
         }
 
         if (room.countdown <= 0) {
+          console.warn(`[SERVER BID REJECTED ${time}] Bidding window expired (countdown=${room.countdown}).`);
           return safeRespond({ success: false, error: 'Bidding window has expired.' });
         }
 
@@ -608,7 +618,7 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         }
 
         if (!player || !player.teamId) {
-          console.warn(`[MULTIPLAYER BID REJECTED] Player ${pId} has no assigned team in room ${code}.`);
+          console.warn(`[SERVER BID REJECTED ${time}] Player ${pId} has no assigned team in room ${code}.`);
           return safeRespond({ success: false, error: 'You do not own an assigned franchise in this room.' });
         }
 
@@ -619,16 +629,19 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
 
         const team = room.teams.find(t => t.id === player.teamId);
         if (!team) {
+          console.warn(`[SERVER BID REJECTED ${time}] Franchise "${player.teamId}" not found in room roster.`);
           return safeRespond({ success: false, error: 'Franchise not found in room roster.' });
         }
 
         const currentLot = room.playerPool[room.currentPlayerIndex];
         if (!currentLot) {
+          console.warn(`[SERVER BID REJECTED ${time}] No active player lot at index ${room.currentPlayerIndex}.`);
           return safeRespond({ success: false, error: 'No active player lot.' });
         }
 
         // Cannot bid if already holding highest bid
         if (room.highestBidderId === player.id || (room.highestBidderTeamId && room.highestBidderTeamId === team.id)) {
+          console.warn(`[SERVER BID REJECTED ${time}] Player ${player.name} (${team.shortName}) already holds highest bid.`);
           return safeRespond({ success: false, error: 'You already hold the highest bid!' });
         }
 
@@ -640,7 +653,7 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         // Validate budget, squad size, overseas limits, and minimum squad reserve
         const validation = validateBid(team, currentLot, nextAmount, DEFAULT_RULES);
         if (!validation.isValid) {
-          console.warn(`[MULTIPLAYER BID REJECTED] Validation failed for ${team.shortName}: ${validation.reason}`);
+          console.warn(`[SERVER BID REJECTED ${time}] Validation failed for ${team.shortName}: ${validation.reason}`);
           return safeRespond({ success: false, error: validation.reason || 'Invalid bid.' });
         }
 
@@ -668,7 +681,7 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         room.auctioneerCall = `${player.name} (${team.shortName}) raises bid to ${formatCurrency(nextAmount)}! Timer reset to 15s.`;
 
         const sanitized = sanitizeRoom(room);
-        console.log(`[MULTIPLAYER BID ACCEPTED] ${player.name} (${team.shortName}) -> ${formatCurrency(nextAmount)} on Lot #${currentLot.id} (${currentLot.name})`);
+        console.log(`[SERVER BID ACCEPTED ${time}] ${player.name} (${team.shortName}) -> ${formatCurrency(nextAmount)} on Lot #${currentLot.id} (${currentLot.name})`);
 
         io.to(room.roomCode).emit('bid_placed', {
           bid: newBid,
@@ -678,7 +691,7 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
 
         safeRespond({ success: true, bid: newBid, room: sanitized });
       } catch (err: any) {
-        console.error('[MULTIPLAYER BID ERROR] Error in place_bid handler:', err);
+        console.error(`[SERVER BID ERROR ${new Date().toISOString()}] Error in place_bid handler:`, err);
         safeRespond({ success: false, error: err?.message || 'Error processing bid.' });
       }
     });

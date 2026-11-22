@@ -62,6 +62,11 @@ const io = new SocketIOServer(server, {
   pingInterval: 15000,
   transports: ['websocket', 'polling']
 });
+
+io.on('connection', (socket) => {
+  console.log(`[IO CONNECTION ${new Date().toISOString()}] Socket ${socket.id} connected (transport=${socket.conn.transport.name})`);
+});
+
 setupMultiplayerSocket(io);
 
 // Serve built frontend assets if dist directory exists

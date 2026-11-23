@@ -28,6 +28,36 @@ function generateRoomCode(): string {
   return rooms.has(code) ? generateRoomCode() : code;
 }
 
+/**
+ * Safely extracts payload data and an optional acknowledgement callback from Socket.IO event arguments.
+ * Ensures the returned callback never throws a TypeError, even if the client omitted the callback,
+ * passed arguments in an unexpected order, or if invoking the callback fails.
+ */
+function extractSocketPayload<T = any>(...args: any[]): { data: T; callback: (res: any) => void } {
+  let data: any = {};
+  let rawCallback: any = null;
+
+  for (const arg of args) {
+    if (typeof arg === 'function') {
+      rawCallback = arg;
+    } else if (typeof arg === 'object' && arg !== null) {
+      data = arg;
+    }
+  }
+
+  const safeCallback = (res: any) => {
+    if (typeof rawCallback === 'function') {
+      try {
+        rawCallback(res);
+      } catch (err) {
+        console.error('[SOCKET CALLBACK ERROR]', err);
+      }
+    }
+  };
+
+  return { data: data as T, callback: safeCallback };
+}
+
 export function setupMultiplayerSocket(io: SocketIOServer) {
   io.on('connection', (socket: Socket) => {
     let currentRoomCode: string | null = null;
@@ -36,7 +66,8 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
     console.log(`[SERVER SOCKET ${new Date().toISOString()}] CONNECT: socket=${socket.id}, transport=${socket.conn.transport.name}`);
 
     // 1. CREATE AUCTION ROOM
-    socket.on('create_room', (data: { hostName: string }, callback?: (res: { success: boolean; room?: MultiplayerRoomState; error?: string }) => void) => {
+    socket.on('create_room', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<{ hostName?: string }>(...args);
       try {
         const hostName = (data?.hostName || 'Host').trim().slice(0, 24);
         const roomCode = generateRoomCode();
@@ -100,21 +131,18 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
 
         socket.join(roomCode);
         const response = { success: true, room: sanitizeRoom(newRoom) };
-        if (typeof callback === 'function') {
-          callback(response);
-        }
+        callback(response);
         socket.emit('room_created', response);
       } catch (err: any) {
         const errorResponse = { success: false, error: err?.message || 'Failed to create room' };
-        if (typeof callback === 'function') {
-          callback(errorResponse);
-        }
+        callback(errorResponse);
         socket.emit('room_created', errorResponse);
       }
     });
 
     // 2. JOIN AUCTION ROOM
-    socket.on('join_room', (data: { roomCode: string; playerName: string }, callback?: (res: { success: boolean; room?: MultiplayerRoomState; playerId?: string; error?: string }) => void) => {
+    socket.on('join_room', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<{ roomCode?: string; playerName?: string }>(...args);
       try {
         const code = (data?.roomCode || '').trim().toUpperCase();
         const playerName = (data?.playerName || 'Player').trim().slice(0, 24);
@@ -122,21 +150,21 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         const room = rooms.get(code);
         if (!room) {
           const errorResponse = { success: false, error: `Room code "${code}" not found.` };
-          if (typeof callback === 'function') callback(errorResponse);
+          callback(errorResponse);
           socket.emit('room_joined', errorResponse);
           return;
         }
 
         if (room.players.length >= 10) {
           const errorResponse = { success: false, error: 'Room is full (max 10 human managers).' };
-          if (typeof callback === 'function') callback(errorResponse);
+          callback(errorResponse);
           socket.emit('room_joined', errorResponse);
           return;
         }
 
         if (room.status === 'auction' || room.status === 'completed') {
           const errorResponse = { success: false, error: 'Auction has already started in this room.' };
-          if (typeof callback === 'function') callback(errorResponse);
+          callback(errorResponse);
           socket.emit('room_joined', errorResponse);
           return;
         }
@@ -159,60 +187,55 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         socket.join(code);
         io.to(code).emit('room_updated', sanitizeRoom(room));
         const response = { success: true, room: sanitizeRoom(room), playerId };
-        if (typeof callback === 'function') callback(response);
+        callback(response);
         socket.emit('room_joined', response);
       } catch (err: any) {
         const errorResponse = { success: false, error: err?.message || 'Failed to join room' };
-        if (typeof callback === 'function') callback(errorResponse);
+        callback(errorResponse);
         socket.emit('room_joined', errorResponse);
       }
     });
 
     // 3. CLAIM TEAM (Atomic real-time team claiming)
-    socket.on('claim_team', (data: { teamId: string }, callback?: (res: { success: boolean; teamId?: string; teamName?: string; error?: string }) => void) => {
+    socket.on('claim_team', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<{ teamId?: string }>(...args);
       try {
         if (!currentRoomCode || !currentPlayerId) {
-          const errRes = { success: false, error: 'Not connected to an active room.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Not connected to an active room.' });
           return;
         }
 
         const room = rooms.get(currentRoomCode);
         if (!room) {
-          const errRes = { success: false, error: 'Auction room not found.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Auction room not found.' });
           return;
         }
 
         if (room.status !== 'waiting' && room.status !== 'ready') {
-          const errRes = { success: false, error: 'Team claiming is only permitted in the lobby.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Team claiming is only permitted in the lobby.' });
           return;
         }
 
         const player = room.players.find(p => p.id === currentPlayerId);
         if (!player) {
-          const errRes = { success: false, error: 'Player identity not found in room roster.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Player identity not found in room roster.' });
           return;
         }
 
         const targetTeamId = (data?.teamId || '').trim();
         const targetTeam = room.teams.find(t => t.id === targetTeamId);
         if (!targetTeam) {
-          const errRes = { success: false, error: `Invalid franchise ID "${targetTeamId}".` };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: `Invalid franchise ID "${targetTeamId}".` });
           return;
         }
 
         // Prevent claiming if player already holds another team
         if (player.teamId && player.teamId !== targetTeamId) {
           const currentTeam = room.teams.find(t => t.id === player.teamId);
-          const errRes = {
+          callback({
             success: false,
             error: `You already hold ${currentTeam?.name || player.teamId}. Please release it before claiming another franchise.`
-          };
-          if (typeof callback === 'function') callback(errRes);
+          });
           return;
         }
 
@@ -220,11 +243,10 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         const existingClaimant = room.players.find(p => p.teamId === targetTeamId && p.id !== currentPlayerId);
         if (existingClaimant || (targetTeam.isHumanControlled && targetTeam.ownerName && targetTeam.ownerName !== player.name)) {
           const owner = existingClaimant ? existingClaimant.name : (targetTeam.ownerName || 'another manager');
-          const errRes = {
+          callback({
             success: false,
             error: `${targetTeam.name} (${targetTeam.shortName}) is already claimed by ${owner}.`
-          };
-          if (typeof callback === 'function') callback(errRes);
+          });
           return;
         }
 
@@ -243,46 +265,40 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           teamName: targetTeam.name
         });
 
-        const successRes = { success: true, teamId: targetTeamId, teamName: targetTeam.name };
-        if (typeof callback === 'function') callback(successRes);
+        callback({ success: true, teamId: targetTeamId, teamName: targetTeam.name });
       } catch (err: any) {
-        const errRes = { success: false, error: err?.message || 'Server error while claiming team.' };
-        if (typeof callback === 'function') callback(errRes);
+        callback({ success: false, error: err?.message || 'Server error while claiming team.' });
       }
     });
 
     // 3B. RELEASE TEAM (Allow player to unclaim/release their franchise)
-    socket.on('release_team', (callback?: (res: { success: boolean; releasedTeamId?: string; error?: string }) => void) => {
+    socket.on('release_team', (...args: any[]) => {
+      const { callback } = extractSocketPayload(...args);
       try {
         if (!currentRoomCode || !currentPlayerId) {
-          const errRes = { success: false, error: 'Not connected to an active room.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Not connected to an active room.' });
           return;
         }
 
         const room = rooms.get(currentRoomCode);
         if (!room) {
-          const errRes = { success: false, error: 'Auction room not found.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Auction room not found.' });
           return;
         }
 
         if (room.status !== 'waiting' && room.status !== 'ready') {
-          const errRes = { success: false, error: 'Cannot release franchise while auction is in progress.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Cannot release franchise while auction is in progress.' });
           return;
         }
 
         const player = room.players.find(p => p.id === currentPlayerId);
         if (!player) {
-          const errRes = { success: false, error: 'Player identity not found.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'Player identity not found.' });
           return;
         }
 
         if (!player.teamId) {
-          const errRes = { success: false, error: 'You do not currently hold any franchise.' };
-          if (typeof callback === 'function') callback(errRes);
+          callback({ success: false, error: 'You do not currently hold any franchise.' });
           return;
         }
 
@@ -301,83 +317,87 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         io.to(currentRoomCode).emit('team_released', {
           playerId: player.id,
           playerName: player.name,
-          teamId: releasedTeamId
+          releasedTeamId
         });
 
-        const successRes = { success: true, releasedTeamId };
-        if (typeof callback === 'function') callback(successRes);
+        callback({ success: true, releasedTeamId });
       } catch (err: any) {
-        const errRes = { success: false, error: err?.message || 'Server error while releasing team.' };
-        if (typeof callback === 'function') callback(errRes);
+        callback({ success: false, error: err?.message || 'Server error while releasing team.' });
       }
     });
 
     // 3C. SELECT TEAM (Backwards-compatibility wrapper for select_team)
-    socket.on('select_team', (data: { teamId: string | null }, callback?: (res: { success: boolean; error?: string }) => void) => {
-      if (!currentRoomCode || !currentPlayerId) {
-        if (typeof callback === 'function') callback({ success: false, error: 'Not in a room.' });
-        return;
-      }
-      const room = rooms.get(currentRoomCode);
-      if (!room) {
-        if (typeof callback === 'function') callback({ success: false, error: 'Room not found.' });
-        return;
-      }
+    socket.on('select_team', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<{ teamId?: string | null }>(...args);
+      try {
+        if (!currentRoomCode || !currentPlayerId) {
+          callback({ success: false, error: 'Not in a room.' });
+          return;
+        }
+        const room = rooms.get(currentRoomCode);
+        if (!room) {
+          callback({ success: false, error: 'Room not found.' });
+          return;
+        }
 
-      const player = room.players.find(p => p.id === currentPlayerId);
-      if (!player) {
-        if (typeof callback === 'function') callback({ success: false, error: 'Player not found in room.' });
-        return;
-      }
+        const player = room.players.find(p => p.id === currentPlayerId);
+        if (!player) {
+          callback({ success: false, error: 'Player not found in room.' });
+          return;
+        }
 
-      const targetTeamId = data?.teamId;
+        const targetTeamId = data?.teamId;
 
-      if (!targetTeamId) {
-        // Release team
-        if (player.teamId) {
+        if (!targetTeamId) {
+          // Release team
+          if (player.teamId) {
+            const prevTeam = room.teams.find(t => t.id === player.teamId);
+            if (prevTeam) {
+              prevTeam.ownerName = undefined;
+              prevTeam.isHumanControlled = false;
+            }
+            player.teamId = null;
+            player.isReady = false;
+          }
+          io.to(currentRoomCode).emit('room_updated', sanitizeRoom(room));
+          callback({ success: true });
+          return;
+        }
+
+        // Check if team is already claimed by someone else
+        const existingClaim = room.players.find(p => p.teamId === targetTeamId && p.id !== currentPlayerId);
+        if (existingClaim) {
+          callback({ success: false, error: `Team already selected by ${existingClaim.name}.` });
+          return;
+        }
+
+        // Free previous team if any
+        if (player.teamId && player.teamId !== targetTeamId) {
           const prevTeam = room.teams.find(t => t.id === player.teamId);
           if (prevTeam) {
             prevTeam.ownerName = undefined;
             prevTeam.isHumanControlled = false;
           }
-          player.teamId = null;
-          player.isReady = false;
         }
+
+        // Assign new team
+        player.teamId = targetTeamId;
+        const newTeam = room.teams.find(t => t.id === targetTeamId);
+        if (newTeam) {
+          newTeam.ownerName = player.name;
+          newTeam.isHumanControlled = true;
+        }
+
         io.to(currentRoomCode).emit('room_updated', sanitizeRoom(room));
-        if (typeof callback === 'function') callback({ success: true });
-        return;
+        callback({ success: true });
+      } catch (err: any) {
+        callback({ success: false, error: err?.message || 'Error selecting team.' });
       }
-
-      // Check if team is already claimed by someone else
-      const existingClaim = room.players.find(p => p.teamId === targetTeamId && p.id !== currentPlayerId);
-      if (existingClaim) {
-        if (typeof callback === 'function') callback({ success: false, error: `Team already selected by ${existingClaim.name}.` });
-        return;
-      }
-
-      // Free previous team if any
-      if (player.teamId && player.teamId !== targetTeamId) {
-        const prevTeam = room.teams.find(t => t.id === player.teamId);
-        if (prevTeam) {
-          prevTeam.ownerName = undefined;
-          prevTeam.isHumanControlled = false;
-        }
-      }
-
-      // Assign new team
-      player.teamId = targetTeamId;
-      const newTeam = room.teams.find(t => t.id === targetTeamId);
-      if (newTeam) {
-        newTeam.ownerName = player.name;
-        newTeam.isHumanControlled = true;
-      }
-
-      io.to(currentRoomCode).emit('room_updated', sanitizeRoom(room));
-      if (typeof callback === 'function') callback({ success: true });
     });
 
     // 3D. LEAVE ROOM (Clean player departure & team release)
-    socket.on('leave_room', (callback?: (res: { success: boolean }) => void) => {
+    socket.on('leave_room', (...args: any[]) => {
+      const { callback } = extractSocketPayload(...args);
       try {
         if (currentRoomCode && currentPlayerId) {
           const room = rooms.get(currentRoomCode);
@@ -406,115 +426,114 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           currentRoomCode = null;
           currentPlayerId = null;
         }
-        if (typeof callback === 'function') callback({ success: true });
+        callback({ success: true });
       } catch {
-        if (typeof callback === 'function') callback({ success: false });
+        callback({ success: false });
       }
     });
 
     // 4. TOGGLE READY
-    socket.on('toggle_ready', (callback?: (res: { success: boolean; error?: string }) => void) => {
+    socket.on('toggle_ready', (...args: any[]) => {
+      const { callback } = extractSocketPayload(...args);
       try {
         if (!currentRoomCode || !currentPlayerId) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Not in a room.' });
+          callback({ success: false, error: 'Not in a room.' });
           return;
         }
         const room = rooms.get(currentRoomCode);
         if (!room) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Room not found.' });
+          callback({ success: false, error: 'Room not found.' });
           return;
         }
 
         const player = room.players.find(p => p.id === currentPlayerId);
         if (!player) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Player not found.' });
+          callback({ success: false, error: 'Player not found.' });
           return;
         }
 
         if (!player.teamId) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Please select an IPL team first.' });
+          callback({ success: false, error: 'Please select an IPL team first.' });
           return;
         }
 
         player.isReady = !player.isReady;
         io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
-        if (typeof callback === 'function') callback({ success: true });
+        callback({ success: true });
       } catch (err: any) {
-        if (typeof callback === 'function') callback({ success: false, error: err?.message || 'Error updating ready state.' });
+        callback({ success: false, error: err?.message || 'Error updating ready state.' });
       }
     });
 
     // 5. UPDATE SETTINGS (Host only)
-    socket.on('update_settings', (data: Partial<MultiplayerRoomSettings>, callback?: (res: { success: boolean; error?: string }) => void) => {
+    socket.on('update_settings', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<Partial<MultiplayerRoomSettings>>(...args);
       try {
         if (!currentRoomCode || !currentPlayerId) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Not in a room.' });
+          callback({ success: false, error: 'Not in a room.' });
           return;
         }
         const room = rooms.get(currentRoomCode);
         if (!room) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Room not found.' });
+          callback({ success: false, error: 'Room not found.' });
           return;
         }
 
         if (room.hostId !== currentPlayerId) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Only the host can modify room settings.' });
+          callback({ success: false, error: 'Only the host can modify room settings.' });
           return;
         }
 
         room.settings = { ...room.settings, ...data };
         io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
-        if (typeof callback === 'function') callback({ success: true });
+        callback({ success: true });
       } catch (err: any) {
-        if (typeof callback === 'function') callback({ success: false, error: err?.message || 'Error updating settings.' });
+        callback({ success: false, error: err?.message || 'Error updating settings.' });
       }
     });
 
     // 6. START AUCTION (Host only - Allows single player or multiplayer)
-    socket.on('start_auction', (callback?: (res: { success: boolean; error?: string }) => void) => {
+    socket.on('start_auction', (...args: any[]) => {
+      const { callback } = extractSocketPayload(...args);
       try {
         if (!currentRoomCode || !currentPlayerId) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Not in a room.' });
+          callback({ success: false, error: 'Not in a room.' });
           return;
         }
         const room = rooms.get(currentRoomCode);
         if (!room) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Room not found.' });
+          callback({ success: false, error: 'Room not found.' });
           return;
         }
 
         if (room.hostId !== currentPlayerId) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Only the host can start the auction.' });
+          callback({ success: false, error: 'Only the host can start the auction.' });
           return;
         }
 
         // Check min players requirement: Allow starting with 1 player (single player mode)
         if (room.players.length < 1) {
-          if (typeof callback === 'function') callback({ success: false, error: 'Need at least 1 player to start.' });
+          callback({ success: false, error: 'Need at least 1 player to start.' });
           return;
         }
 
         // Check all joined players have chosen a team
         const unassigned = room.players.filter(p => !p.teamId);
         if (unassigned.length > 0) {
-          if (typeof callback === 'function') {
-            callback({
-              success: false,
-              error: `All players must select an IPL franchise before starting (${unassigned[0].name} has no team).`
-            });
-          }
+          callback({
+            success: false,
+            error: `All players must select an IPL franchise before starting (${unassigned[0].name} has no team).`
+          });
           return;
         }
 
         // Verify host has claimed a team
         const host = room.players.find(p => p.id === room.hostId);
         if (!host || !host.teamId) {
-          if (typeof callback === 'function') {
-            callback({
-              success: false,
-              error: 'You must claim an IPL franchise before starting the auction.'
-            });
-          }
+          callback({
+            success: false,
+            error: 'You must claim an IPL franchise before starting the auction.'
+          });
           return;
         }
 
@@ -525,25 +544,16 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         startServerTimer(io, room);
 
         io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
-        if (typeof callback === 'function') callback({ success: true });
+        callback({ success: true });
       } catch (err: any) {
         console.error('Error starting auction:', err);
-        if (typeof callback === 'function') callback({ success: false, error: err?.message || 'Error starting auction.' });
+        callback({ success: false, error: err?.message || 'Error starting auction.' });
       }
     });
 
     // 7. PLACE BID (Authoritative Server Validation & Real-Time Opponent Synchronization)
     socket.on('place_bid', (...args: any[]) => {
-      let data: any = {};
-      let callback: any = null;
-
-      for (const arg of args) {
-        if (typeof arg === 'function') {
-          callback = arg;
-        } else if (typeof arg === 'object' && arg !== null) {
-          data = arg;
-        }
-      }
+      const { data, callback } = extractSocketPayload<any>(...args);
 
       const pId = data.playerId || currentPlayerId;
       let player: MultiplayerPlayer | undefined;
@@ -581,15 +591,8 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           }
         }
 
-        // 3. Acknowledgement Callback to Sender
-        if (typeof callback === 'function') {
-          try {
-            callback(responsePayload);
-            console.log(`[SERVER BID ${time}] Invoked ACK callback for socket=${socket.id}`);
-          } catch (e) {
-            console.error(`[SERVER BID ${time}] Error invoking place_bid callback:`, e);
-          }
-        }
+        // 3. Acknowledgement Callback to Sender (safeCallback checks function and try/catches)
+        callback(responsePayload);
       };
 
       try {
@@ -725,28 +728,19 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
     });
 
     // 8. ADVANCE TO NEXT LOT (Host only - Skip Current Player)
-    socket.on('next_lot', (dataOrCallback?: any, maybeCallback?: any) => {
-      const data = typeof dataOrCallback === 'object' && dataOrCallback !== null ? dataOrCallback : {};
-      const callback = typeof dataOrCallback === 'function'
-        ? dataOrCallback
-        : (typeof maybeCallback === 'function' ? maybeCallback : () => {});
-
-      const safeCallback = (res: any) => {
-        if (typeof callback === 'function') {
-          try { callback(res); } catch (e) { console.error('Error in next_lot callback:', e); }
-        }
-      };
+    socket.on('next_lot', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<any>(...args);
 
       try {
         const code = (data.roomCode || currentRoomCode || '').trim().toUpperCase();
         const pId = data.playerId || currentPlayerId;
 
-        if (!code || !pId) return safeCallback({ success: false, error: 'Not in a room.' });
+        if (!code || !pId) return callback({ success: false, error: 'Not in a room.' });
         const room = rooms.get(code);
-        if (!room) return safeCallback({ success: false, error: 'Room not found.' });
+        if (!room) return callback({ success: false, error: 'Room not found.' });
 
         if (room.hostId !== pId) {
-          return safeCallback({ success: false, error: 'Only the host can advance lots.' });
+          return callback({ success: false, error: 'Only the host can advance lots.' });
         }
 
         const cur = room.playerPool[room.currentPlayerIndex];
@@ -755,45 +749,36 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         }
 
         advanceRoomToNextLot(io, room);
-        safeCallback({ success: true });
+        callback({ success: true });
       } catch (err: any) {
         console.error('Error in next_lot handler:', err);
-        safeCallback({ success: false, error: err?.message || 'Error advancing lot.' });
+        callback({ success: false, error: err?.message || 'Error advancing lot.' });
       }
     });
 
     // 8B. SKIP ENTIRE SET (Host only - Skip Remaining Players in Set)
-    socket.on('skip_set', (dataOrCallback?: any, maybeCallback?: any) => {
-      const data = typeof dataOrCallback === 'object' && dataOrCallback !== null ? dataOrCallback : {};
-      const callback = typeof dataOrCallback === 'function'
-        ? dataOrCallback
-        : (typeof maybeCallback === 'function' ? maybeCallback : () => {});
-
-      const safeCallback = (res: any) => {
-        if (typeof callback === 'function') {
-          try { callback(res); } catch (e) { console.error('Error in skip_set callback:', e); }
-        }
-      };
+    socket.on('skip_set', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<any>(...args);
 
       try {
         const code = (data.roomCode || currentRoomCode || '').trim().toUpperCase();
         const pId = data.playerId || currentPlayerId;
 
         if (!code || !pId) {
-          return safeCallback({ success: false, error: 'Not in a room.' });
+          return callback({ success: false, error: 'Not in a room.' });
         }
         const room = rooms.get(code);
         if (!room) {
-          return safeCallback({ success: false, error: 'Room not found.' });
+          return callback({ success: false, error: 'Room not found.' });
         }
 
         if (room.hostId !== pId) {
-          return safeCallback({ success: false, error: 'Only the host can skip sets.' });
+          return callback({ success: false, error: 'Only the host can skip sets.' });
         }
 
         const currentLot = room.playerPool[room.currentPlayerIndex];
         if (!currentLot) {
-          return safeCallback({ success: false, error: 'No active lot.' });
+          return callback({ success: false, error: 'No active lot.' });
         }
         const currentCategory = currentLot.category;
 
@@ -824,73 +809,51 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           io.to(room.roomCode).emit('auction_completed', sanitizeRoom(room));
         }
 
-        safeCallback({ success: true });
+        callback({ success: true });
       } catch (err: any) {
         console.error('Error in skip_set handler:', err);
-        safeCallback({ success: false, error: err?.message || 'Error skipping set.' });
+        callback({ success: false, error: err?.message || 'Error skipping set.' });
       }
     });
 
     // 9. PAUSE / RESUME AUCTION (Host only)
-    socket.on('toggle_pause', (dataOrCallback?: any, maybeCallback?: any) => {
-      const data = typeof dataOrCallback === 'object' && dataOrCallback !== null ? dataOrCallback : {};
-      const callback = typeof dataOrCallback === 'function'
-        ? dataOrCallback
-        : (typeof maybeCallback === 'function' ? maybeCallback : () => {});
-
-      const safeCallback = (res: any) => {
-        if (typeof callback === 'function') {
-          try { callback(res); } catch (e) { console.error('Error in toggle_pause callback:', e); }
-        }
-      };
+    socket.on('toggle_pause', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<any>(...args);
 
       try {
         const code = (data.roomCode || currentRoomCode || '').trim().toUpperCase();
         const pId = data.playerId || currentPlayerId;
 
-        if (!code || !pId) return safeCallback({ success: false, error: 'Not in a room.' });
+        if (!code || !pId) return callback({ success: false, error: 'Not in a room.' });
         const room = rooms.get(code);
-        if (!room) return safeCallback({ success: false, error: 'Room not found.' });
+        if (!room) return callback({ success: false, error: 'Room not found.' });
 
         if (room.hostId !== pId) {
-          return safeCallback({ success: false, error: 'Only the host can pause/resume.' });
+          return callback({ success: false, error: 'Only the host can pause/resume.' });
         }
 
         room.isPaused = !room.isPaused;
         room.auctioneerCall = room.isPaused ? 'Auction paused by host.' : 'Auction resumed!';
         io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
-        safeCallback({ success: true });
+        callback({ success: true });
       } catch (err: any) {
         console.error('Error in toggle_pause handler:', err);
-        safeCallback({ success: false, error: err?.message || 'Error toggling pause.' });
+        callback({ success: false, error: err?.message || 'Error toggling pause.' });
       }
     });
 
     // 10. RECONNECT / RECOVER STATE
-    socket.on('reconnect_player', (dataOrCallback?: any, maybeCallback?: any) => {
-      const data = typeof dataOrCallback === 'object' && dataOrCallback !== null ? dataOrCallback : {};
-      const callback = typeof dataOrCallback === 'function'
-        ? dataOrCallback
-        : (typeof maybeCallback === 'function' ? maybeCallback : () => {});
-
-      const safeCallback = (res: any) => {
-        if (typeof callback === 'function') {
-          try {
-            callback(res);
-          } catch (e) {
-            console.error('Error invoking reconnect_player callback:', e);
-          }
-        }
-      };
+    socket.on('reconnect_player', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<any>(...args);
 
       try {
         const code = (data.roomCode || '').trim().toUpperCase();
-        if (!code) return safeCallback({ success: false, error: 'Room code missing.' });
+        if (!code) return callback({ success: false, error: 'Room code missing.' });
         const room = rooms.get(code);
-        if (!room) return safeCallback({ success: false, error: 'Room not found.' });
+        if (!room) return callback({ success: false, error: 'Room not found.' });
 
         const player = room.players.find(p => p.id === data.playerId);
-        if (!player) return safeCallback({ success: false, error: 'Player identity not found in this room.' });
+        if (!player) return callback({ success: false, error: 'Player identity not found in this room.' });
 
         player.socketId = socket.id;
         player.isConnected = true;
@@ -899,10 +862,10 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
 
         socket.join(code);
         io.to(code).emit('room_updated', sanitizeRoom(room));
-        safeCallback({ success: true, room: sanitizeRoom(room) });
+        callback({ success: true, room: sanitizeRoom(room) });
       } catch (err: any) {
         console.error('Error in reconnect_player handler:', err);
-        safeCallback({ success: false, error: err?.message || 'Failed to reconnect.' });
+        callback({ success: false, error: err?.message || 'Failed to reconnect.' });
       }
     });
 

@@ -709,13 +709,15 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         const sanitized = sanitizeRoom(room);
         console.log(`[SERVER BID ACCEPTED ${time}] ${player.name} (${team.shortName}) -> ${formatCurrency(nextAmount)} on Lot #${currentLot.id} (${currentLot.name})`);
 
+        // Respond to the bidder FIRST so their Promise resolves before the room broadcast arrives
+        safeRespond({ success: true, bid: newBid, room: sanitized });
+
+        // Then broadcast the updated state to all other players in the room
         io.to(room.roomCode).emit('bid_placed', {
           bid: newBid,
           room: sanitized
         });
         io.to(room.roomCode).emit('room_updated', sanitized);
-
-        safeRespond({ success: true, bid: newBid, room: sanitized });
       } catch (err: any) {
         console.error(`[SERVER BID ERROR ${new Date().toISOString()}] Error in place_bid handler:`, err);
         safeRespond({ success: false, error: err?.message || 'Error processing bid.' });

@@ -62,13 +62,7 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
     setImageLoaded(true);
   }, [currentLot?.id, currentLot?.photoUrl]);
 
-  // Synchronize bidding loading state whenever this user's franchise holds the highest bid
-  useEffect(() => {
-    if (myTeam && room.highestBidderTeamId === myTeam.id) {
-      setIsBidding(false);
-      setBidError(null);
-    }
-  }, [room.highestBidderTeamId, myTeam?.id]);
+  // isBidding loading state is managed exclusively by handlePlaceBid()'s finally block.
 
   const countdown = room.countdown;
   const maxCountdown = room.settings.timerSeconds || 15;

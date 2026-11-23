@@ -491,8 +491,6 @@ export async function placeMultiplayerBid(
         s.off('bid_response', onBidResponse);
         s.off('bid_rejected', onBidRejected);
         s.off('bid_accepted', onBidAccepted);
-        s.off('bid_placed', onBidPlacedBroadcast);
-        s.off('room_updated', onRoomUpdatedBroadcast);
         s.off('disconnect', onDisconnect);
       };
 
@@ -544,40 +542,6 @@ export async function placeMultiplayerBid(
         }
       };
       s.on('bid_accepted', onBidAccepted);
-
-      // Channel 2: Room broadcast detection (if server accepted & published this new bid to the room)
-      const onBidPlacedBroadcast = (data: { bid: BidRecord; room: MultiplayerRoomState }) => {
-        if (data?.bid) {
-          const normReqTeam = (reqPayload.teamId || '').trim().toUpperCase();
-          const normBidTeam = (data.bid.teamId || '').trim().toUpperCase();
-          const matchTeam = normReqTeam && normBidTeam === normReqTeam;
-          const matchPlayer = reqPayload.playerId && data.room?.highestBidderId === reqPayload.playerId;
-          const matchAmount = !reqPayload.amount || data.bid.amount >= reqPayload.amount;
-
-          if ((matchTeam || matchPlayer) && matchAmount) {
-            console.log(`[BID CLIENT ${new Date().toISOString()}][RECV bid_placed match]`, data.bid);
-            finish('bid_placed_broadcast', { success: true, bid: data.bid, room: data.room });
-          }
-        }
-      };
-      s.on('bid_placed', onBidPlacedBroadcast);
-
-      // Channel 3: Room updated state detection (only for newly advanced highest bid amount)
-      const onRoomUpdatedBroadcast = (updatedRoom: MultiplayerRoomState) => {
-        if (updatedRoom) {
-          const normReqTeam = (reqPayload.teamId || '').trim().toUpperCase();
-          const normRoomTeam = (updatedRoom.highestBidderTeamId || '').trim().toUpperCase();
-          const matchTeam = normReqTeam && normRoomTeam === normReqTeam;
-          const matchPlayer = reqPayload.playerId && updatedRoom.highestBidderId === reqPayload.playerId;
-          const matchAmount = !reqPayload.amount || updatedRoom.currentBid >= reqPayload.amount;
-
-          if ((matchTeam || matchPlayer) && matchAmount) {
-            console.log(`[BID CLIENT ${new Date().toISOString()}][RECV room_updated highestBidder match]`);
-            finish('room_updated_match', { success: true, room: updatedRoom });
-          }
-        }
-      };
-      s.on('room_updated', onRoomUpdatedBroadcast);
 
       // Channel 4: Abrupt disconnect handling (cleans up immediately)
       const onDisconnect = (reason: any) => {

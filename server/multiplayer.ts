@@ -3,10 +3,17 @@ import { INITIAL_TEAMS } from '../src/data/teamsData';
 import { INITIAL_PLAYERS } from '../src/data/playersData';
 import { DEFAULT_RULES, getNextBidAmount, formatCurrency } from '../src/utils/currencyUtils';
 import { validateBid, updateTeamPurchasedPlayer } from '../src/engine/squadRules';
+import {
+  DEFAULT_RETENTION_RULES,
+  validateRetentionSelection,
+  applyTeamRetention
+} from '../src/engine/retentionEngine';
+import { analyzeTournament } from '../src/engine/teamAnalysisEngine';
 import type {
   MultiplayerPlayer,
   MultiplayerRoomState,
   MultiplayerRoomSettings,
+  RetentionRules,
   BidRecord,
   Player,
   Team
@@ -94,6 +101,10 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         const roomTeams: Team[] = INITIAL_TEAMS.map(t => ({
           ...t,
           purchasedPlayers: [],
+          retainedPlayers: [],
+          retentionSpent: 0,
+          auctionSpent: 0,
+          retentionConfirmed: false,
           currentPurse: initialSettings.startingPurse,
           initialPurse: initialSettings.startingPurse,
           squadCount: 0,
@@ -122,7 +133,9 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           countdown: 15,
           isPaused: false,
           auctioneerCall: `Room ${roomCode} created. Waiting for managers to join...`,
-          lastResolvedLot: null
+          lastResolvedLot: null,
+          retentionRules: { ...DEFAULT_RETENTION_RULES },
+          retentions: {}
         };
 
         rooms.set(roomCode, newRoom);
@@ -492,7 +505,147 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
       }
     });
 
-    // 6. START AUCTION (Host only - Allows single player or multiplayer)
+    // 5B. UPDATE RETENTION RULES (Host only - before auction starts)
+    socket.on('update_retention_rules', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<Partial<RetentionRules>>(...args);
+      try {
+        if (!currentRoomCode || !currentPlayerId) {
+          return callback({ success: false, error: 'Not in a room.' });
+        }
+        const room = rooms.get(currentRoomCode);
+        if (!room) return callback({ success: false, error: 'Room not found.' });
+        if (room.hostId !== currentPlayerId) {
+          return callback({ success: false, error: 'Only the host can modify retention rules.' });
+        }
+        if (room.status === 'auction' || room.status === 'completed') {
+          return callback({ success: false, error: 'Cannot modify retention rules after auction has started.' });
+        }
+
+        const currentRules = room.retentionRules || { ...DEFAULT_RETENTION_RULES };
+        room.retentionRules = {
+          enabled: typeof data.enabled === 'boolean' ? data.enabled : currentRules.enabled,
+          maxRetentions: typeof data.maxRetentions === 'number' && data.maxRetentions >= 0 && data.maxRetentions <= 8
+            ? data.maxRetentions
+            : currentRules.maxRetentions,
+          maxOverseasRetentions: typeof data.maxOverseasRetentions === 'number' && data.maxOverseasRetentions >= 0 && data.maxOverseasRetentions <= 4
+            ? data.maxOverseasRetentions
+            : currentRules.maxOverseasRetentions,
+          slotCosts: Array.isArray(data.slotCosts) && data.slotCosts.length > 0
+            ? data.slotCosts
+            : currentRules.slotCosts
+        };
+
+        io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
+        callback({ success: true, retentionRules: room.retentionRules });
+      } catch (err: any) {
+        callback({ success: false, error: err?.message || 'Error updating retention rules.' });
+      }
+    });
+
+    // 5C. START RETENTION STAGE (Host only)
+    socket.on('start_retention', (...args: any[]) => {
+      const { callback } = extractSocketPayload(...args);
+      try {
+        if (!currentRoomCode || !currentPlayerId) {
+          return callback({ success: false, error: 'Not in a room.' });
+        }
+        const room = rooms.get(currentRoomCode);
+        if (!room) return callback({ success: false, error: 'Room not found.' });
+        if (room.hostId !== currentPlayerId) {
+          return callback({ success: false, error: 'Only the host can start the retention stage.' });
+        }
+        if (room.status !== 'waiting' && room.status !== 'ready') {
+          return callback({ success: false, error: 'Retention stage can only be started from the lobby.' });
+        }
+
+        const unassigned = room.players.filter(p => !p.teamId);
+        if (unassigned.length > 0) {
+          return callback({
+            success: false,
+            error: `All players must claim a franchise before entering Retention (${unassigned[0].name} has no team).`
+          });
+        }
+
+        room.status = 'retention';
+        room.auctioneerCall = 'Pre-Auction Player Retention Stage is now LIVE. Franchises may lock their retained core.';
+        io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
+        callback({ success: true, room: sanitizeRoom(room) });
+      } catch (err: any) {
+        callback({ success: false, error: err?.message || 'Error starting retention stage.' });
+      }
+    });
+
+    // 5D. SUBMIT & CONFIRM RETENTION (Team Owner - Server-Authoritative Purse Deduction)
+    socket.on('submit_retention', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<{ roomCode?: string; playerId?: string; teamId?: string; playerIds?: string[] }>(...args);
+      try {
+        const code = (data.roomCode || currentRoomCode || '').trim().toUpperCase();
+        const pId = data.playerId || currentPlayerId;
+        if (!code || !pId) {
+          return callback({ success: false, error: 'Not connected to an active room.' });
+        }
+        const room = rooms.get(code);
+        if (!room) return callback({ success: false, error: 'Room not found.' });
+
+        if (room.status !== 'retention') {
+          return callback({ success: false, error: 'Retentions can only be submitted during the Retention Stage.' });
+        }
+
+        const player = room.players.find(p => p.id === pId);
+        if (!player || !player.teamId) {
+          return callback({ success: false, error: 'You do not own a franchise in this room.' });
+        }
+
+        if (data.teamId && data.teamId.toUpperCase() !== player.teamId.toUpperCase()) {
+          return callback({ success: false, error: 'You can only submit retentions for your own franchise.' });
+        }
+
+        const team = room.teams.find(t => t.id === player.teamId);
+        if (!team) return callback({ success: false, error: 'Franchise not found.' });
+
+        const selectedIds = Array.isArray(data.playerIds) ? data.playerIds : [];
+        const rules = room.retentionRules || DEFAULT_RETENTION_RULES;
+        const validation = validateRetentionSelection(team, selectedIds, room.playerPool, rules);
+
+        if (!validation.isValid) {
+          return callback({ success: false, error: validation.reason || 'Invalid retention selection.' });
+        }
+
+        const { updatedTeam, updatedPlayerPool } = applyTeamRetention(team, validation.items, room.playerPool);
+        room.teams = room.teams.map(t => (t.id === updatedTeam.id ? updatedTeam : t));
+        room.playerPool = updatedPlayerPool;
+        if (!room.retentions) room.retentions = {};
+        room.retentions[updatedTeam.id] = {
+          teamId: updatedTeam.id,
+          playerIds: validation.items.map(i => i.player.id),
+          totalCost: validation.totalCost,
+          confirmed: true,
+          confirmedAt: Date.now(),
+          submittedByPlayerId: pId
+        };
+
+        const sanitized = sanitizeRoom(room);
+        io.to(room.roomCode).emit('retention_updated', {
+          teamId: updatedTeam.id,
+          retention: room.retentions[updatedTeam.id],
+          room: sanitized
+        });
+        io.to(room.roomCode).emit('room_updated', sanitized);
+
+        callback({
+          success: true,
+          teamId: updatedTeam.id,
+          totalCost: validation.totalCost,
+          remainingPurse: updatedTeam.currentPurse,
+          room: sanitized
+        });
+      } catch (err: any) {
+        console.error('Error in submit_retention:', err);
+        callback({ success: false, error: err?.message || 'Server error while confirming retentions.' });
+      }
+    });
+
+    // 6. START AUCTION (Host only - Allows single player or multiplayer, from lobby or retention)
     socket.on('start_auction', (...args: any[]) => {
       const { callback } = extractSocketPayload(...args);
       try {
@@ -508,6 +661,11 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
 
         if (room.hostId !== currentPlayerId) {
           callback({ success: false, error: 'Only the host can start the auction.' });
+          return;
+        }
+
+        if (room.status === 'auction' || room.status === 'completed') {
+          callback({ success: false, error: 'Auction has already started or completed.' });
           return;
         }
 
@@ -537,9 +695,39 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           return;
         }
 
+        // Auto-confirm 0 retentions for any participating team that didn't submit during retention
+        if (room.status === 'retention') {
+          if (!room.retentions) room.retentions = {};
+          for (const p of room.players) {
+            if (p.teamId) {
+              const t = room.teams.find(tm => tm.id === p.teamId);
+              if (t && !t.retentionConfirmed) {
+                t.retentionConfirmed = true;
+                t.retentionSpent = t.retentionSpent || 0;
+                room.retentions[t.id] = {
+                  teamId: t.id,
+                  playerIds: [],
+                  totalCost: 0,
+                  confirmed: true,
+                  confirmedAt: Date.now(),
+                  submittedByPlayerId: p.id
+                };
+              }
+            }
+          }
+        }
+
+        // Find first non-retained upcoming player lot
+        const firstUpcomingIdx = room.playerPool.findIndex(p => p.status === 'upcoming');
+        if (firstUpcomingIdx === -1) {
+          finalizeRoomAuction(io, room);
+          callback({ success: true });
+          return;
+        }
+
         room.status = 'auction';
-        room.currentPlayerIndex = 0;
-        resetRoomLot(room, 0);
+        room.currentPlayerIndex = firstUpcomingIdx;
+        resetRoomLot(room, firstUpcomingIdx);
 
         startServerTimer(io, room);
 
@@ -668,6 +856,11 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           return safeRespond({ success: false, error: 'No active player lot.' });
         }
 
+        if (currentLot.status !== 'upcoming') {
+          console.warn(`[SERVER BID REJECTED ${time}] Lot ${currentLot.name} has status "${currentLot.status}" and is not open for bidding.`);
+          return safeRespond({ success: false, error: `${currentLot.name} is already ${currentLot.status} and cannot be bid on.` });
+        }
+
         // Cannot bid if already holding highest bid
         if (room.highestBidderId === player.id || (room.highestBidderTeamId && room.highestBidderTeamId === team.id)) {
           console.warn(`[SERVER BID REJECTED ${time}] Player ${player.name} (${team.shortName}) already holds highest bid.`);
@@ -744,7 +937,7 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
         }
 
         const cur = room.playerPool[room.currentPlayerIndex];
-        if (cur && cur.status !== 'sold' && room.currentBid === 0) {
+        if (cur && cur.status === 'upcoming') {
           cur.status = 'unsold';
         }
 
@@ -804,9 +997,7 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
           room.auctioneerCall = `Skipped remainder of ${currentCategory} set. Commencing Set: ${room.playerPool[nextIdx].category}!`;
           io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
         } else {
-          room.status = 'completed';
-          if (room.timerInterval) clearInterval(room.timerInterval);
-          io.to(room.roomCode).emit('auction_completed', sanitizeRoom(room));
+          finalizeRoomAuction(io, room);
         }
 
         callback({ success: true });
@@ -839,6 +1030,93 @@ export function setupMultiplayerSocket(io: SocketIOServer) {
       } catch (err: any) {
         console.error('Error in toggle_pause handler:', err);
         callback({ success: false, error: err?.message || 'Error toggling pause.' });
+      }
+    });
+
+    // 9B. CLOSE & FINALIZE AUCTION (Host only)
+    socket.on('close_auction', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<{ roomCode?: string; playerId?: string }>(...args);
+
+      try {
+        const code = (data.roomCode || currentRoomCode || '').trim().toUpperCase();
+        const pId = data.playerId || currentPlayerId;
+
+        if (!code || !pId) return callback({ success: false, error: 'Not in a room.' });
+        const room = rooms.get(code);
+        if (!room) return callback({ success: false, error: 'Room not found.' });
+
+        if (room.hostId !== pId) {
+          return callback({ success: false, error: 'Only the host can close and finalize the auction.' });
+        }
+
+        if (room.status === 'completed') {
+          return callback({ success: false, error: 'Auction is already finalized.' });
+        }
+
+        if (room.status !== 'auction') {
+          return callback({ success: false, error: 'Auction is not currently in progress.' });
+        }
+
+        finalizeRoomAuction(io, room);
+        callback({ success: true, room: sanitizeRoom(room) });
+      } catch (err: any) {
+        console.error('Error in close_auction handler:', err);
+        callback({ success: false, error: err?.message || 'Error finalizing auction.' });
+      }
+    });
+
+    // 9C. RESUME / CONTINUE AUCTION BATCH (Host only - Continues from next eligible player, never resets to index 0)
+    socket.on('resume_auction', (...args: any[]) => {
+      const { data, callback } = extractSocketPayload<{ roomCode?: string; playerId?: string }>(...args);
+
+      try {
+        const code = (data.roomCode || currentRoomCode || '').trim().toUpperCase();
+        const pId = data.playerId || currentPlayerId;
+
+        if (!code || !pId) return callback({ success: false, error: 'Not in a room.' });
+        const room = rooms.get(code);
+        if (!room) return callback({ success: false, error: 'Room not found.' });
+
+        if (room.hostId !== pId) {
+          return callback({ success: false, error: 'Only the host can resume the auction.' });
+        }
+
+        if (room.status !== 'completed') {
+          return callback({ success: false, error: 'Auction can only be resumed from a closed/completed session.' });
+        }
+
+        // Preserve persistent sequence: continue from currentPlayerIndex if still upcoming,
+        // otherwise advance to the next eligible upcoming player in order.
+        let nextIdx = -1;
+        const startIdx = Math.max(0, room.currentPlayerIndex);
+        for (let i = startIdx; i < room.playerPool.length; i++) {
+          if (room.playerPool[i].status === 'upcoming') {
+            nextIdx = i;
+            break;
+          }
+        }
+        if (nextIdx === -1) {
+          nextIdx = room.playerPool.findIndex(p => p.status === 'upcoming');
+        }
+
+        if (nextIdx === -1) {
+          return callback({ success: false, error: 'All players in the auction pool have already been auctioned or retained.' });
+        }
+
+        room.status = 'auction';
+        room.isPaused = false;
+        room.finalResults = undefined;
+        room.finalizedAt = undefined;
+        room.currentPlayerIndex = nextIdx;
+        resetRoomLot(room, nextIdx);
+        startServerTimer(io, room);
+
+        const sanitized = sanitizeRoom(room);
+        io.to(room.roomCode).emit('room_updated', sanitized);
+        callback({ success: true, room: sanitized });
+      } catch (err: any) {
+        console.error('Error in resume_auction handler:', err);
+        callback({ success: false, error: err?.message || 'Error resuming auction.' });
       }
     });
 
@@ -1016,11 +1294,55 @@ function advanceRoomToNextLot(io: SocketIOServer, room: InternalRoomState) {
     resetRoomLot(room, nextIdx);
     io.to(room.roomCode).emit('room_updated', sanitizeRoom(room));
   } else {
-    // Complete Auction
-    room.status = 'completed';
-    if (room.timerInterval) clearInterval(room.timerInterval);
-    io.to(room.roomCode).emit('auction_completed', sanitizeRoom(room));
+    finalizeRoomAuction(io, room);
   }
+}
+
+function finalizeRoomAuction(io: SocketIOServer, room: InternalRoomState) {
+  if (room.status === 'completed') return;
+
+  if (room.timerInterval) {
+    clearInterval(room.timerInterval);
+    room.timerInterval = undefined;
+  }
+
+  room.status = 'completed';
+  room.isPaused = false;
+  room.lastResolvedLot = null;
+  room.currentBid = 0;
+  room.highestBidderId = null;
+  room.highestBidderTeamId = null;
+  room.highestBidderName = null;
+  room.bidHistory = [];
+
+  // Finalize team spending & squad metrics
+  room.teams = room.teams.map(team => {
+    const totalSpent = Math.max(0, (team.initialPurse || 1200000000) - team.currentPurse);
+    const retentionSpent = team.retentionSpent || 0;
+    const auctionSpent = Math.max(0, totalSpent - retentionSpent);
+    return {
+      ...team,
+      retentionSpent,
+      auctionSpent
+    };
+  });
+
+  // Compute authoritative AI-powered tournament evaluation & rankings on server
+  // Evaluate all participating franchises (and all 10 teams consistently)
+  const participatingTeamIds = new Set(
+    room.players.map(p => p.teamId).filter((id): id is string => Boolean(id))
+  );
+  const teamsToEvaluate = participatingTeamIds.size > 0
+    ? room.teams.filter(t => participatingTeamIds.has(t.id) || t.squadCount > 0)
+    : room.teams;
+
+  room.finalResults = analyzeTournament(teamsToEvaluate.length > 0 ? teamsToEvaluate : room.teams);
+  room.finalizedAt = Date.now();
+  room.auctioneerCall = `Auction officially finalized! ${room.finalResults.rankings[0]?.teamName || 'Top team'} leads the standings.`;
+
+  const sanitized = sanitizeRoom(room);
+  io.to(room.roomCode).emit('auction_completed', sanitized);
+  io.to(room.roomCode).emit('room_updated', sanitized);
 }
 
 // Remove internal timeout references before broadcasting

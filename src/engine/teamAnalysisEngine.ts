@@ -363,6 +363,7 @@ export function analyzeAuctionEfficiency(team: Team): AuctionEfficiencyAnalysis 
  */
 export function recommendPlayingXI(players: Player[]): {
   playingXI: PlayingXISlot[];
+  impactPlayer: Player | null;
   captain: Player | null;
   viceCaptain: Player | null;
   suggestedBattingOrder: { position: number; playerName: string; role: string; rating: number; isOverseas: boolean }[];
@@ -371,6 +372,7 @@ export function recommendPlayingXI(players: Player[]): {
   if (!players || players.length === 0) {
     return {
       playingXI: [],
+      impactPlayer: null,
       captain: null,
       viceCaptain: null,
       suggestedBattingOrder: [],
@@ -564,13 +566,126 @@ export function recommendPlayingXI(players: Player[]): {
     { phase: 'Death Overs', bowlers: deathBowlersList.length > 0 ? deathBowlersList : ['Death Over Specialists'] }
   ];
 
+  const impactPlayerPool = players
+    .filter(p => !playingXI.some(slot => slot.player.id === p.id))
+    .sort((a, b) => (b.rating || 75) - (a.rating || 75));
+  const impactPlayer = impactPlayerPool[0] || null;
+
   return {
     playingXI,
+    impactPlayer,
     captain,
     viceCaptain,
     suggestedBattingOrder,
     suggestedBowlingCombination
   };
+}
+
+/**
+ * 5B. ALL-ROUNDER, WICKETKEEPING, BENCH STRENGTH & PLAYING XI SCORING
+ */
+export function analyzeAllRounders(players: Player[]): number {
+  const ars = players.filter(p => p.role === 'All-Rounder').sort((a, b) => (b.rating || 75) - (a.rating || 75));
+  if (ars.length === 0) return 25;
+  const top2Avg = ars.slice(0, 2).reduce((s, p) => s + (p.rating || 75), 0) / Math.min(2, ars.length);
+  const countBonus = ars.length >= 4 ? 12 : ars.length === 3 ? 8 : ars.length === 2 ? 4 : -8;
+  return clamp(((top2Avg - 65) / 35) * 88 + countBonus);
+}
+
+export function analyzeWicketkeeping(players: Player[]): number {
+  const wks = players.filter(p => p.role === 'Wicketkeeper').sort((a, b) => (b.rating || 75) - (a.rating || 75));
+  if (wks.length === 0) return 20;
+  const primaryRating = wks[0].rating || 75;
+  const backupBonus = wks.length >= 2 ? 12 : 0;
+  return clamp(((primaryRating - 65) / 35) * 88 + backupBonus);
+}
+
+export function analyzeBenchStrength(players: Player[], playingXI: PlayingXISlot[]): number {
+  if (players.length <= 11) {
+    return clamp(players.length * 4);
+  }
+  const xiIds = new Set(playingXI.map(s => s.player.id));
+  const bench = players.filter(p => !xiIds.has(p.id)).sort((a, b) => (b.rating || 75) - (a.rating || 75));
+  if (bench.length === 0) return 30;
+  const topBench = bench.slice(0, 5);
+  const benchAvg = topBench.reduce((s, p) => s + (p.rating || 75), 0) / topBench.length;
+  const sizeBonus = players.length >= 18 ? 15 : players.length >= 15 ? 8 : 2;
+  return clamp(((benchAvg - 65) / 35) * 85 + sizeBonus);
+}
+
+export function analyzePlayingXIPotential(playingXI: PlayingXISlot[]): number {
+  if (playingXI.length === 0) return 0;
+  const avgRating = playingXI.reduce((s, slot) => s + (slot.player.rating || 75), 0) / playingXI.length;
+  const hasWK = playingXI.some(s => s.player.role === 'Wicketkeeper');
+  const bowlingOpts = playingXI.filter(s => s.player.role === 'Bowler' || s.player.role === 'All-Rounder').length;
+  const overseasCount = playingXI.filter(s => s.player.isOverseas).length;
+
+  let base = ((avgRating - 65) / 35) * 90;
+  if (playingXI.length < 11) base -= (11 - playingXI.length) * 7;
+  if (!hasWK) base -= 12;
+  if (bowlingOpts < 5) base -= (5 - bowlingOpts) * 6;
+  if (overseasCount > 4) base -= 15;
+  if (playingXI.length === 11 && hasWK && bowlingOpts >= 5 && overseasCount <= 4) base += 10;
+
+  return clamp(base);
+}
+
+/**
+ * 5C. UNIQUE TEAM-SPECIFIC AI NARRATIVE GENERATOR
+ */
+export function generateAINarrative(
+  team: Team,
+  players: Player[],
+  batting: BattingAnalysis,
+  bowling: BowlingAnalysis,
+  allRounderScore: number,
+  wicketkeepingScore: number,
+  squadBalance: SquadBalanceAnalysis,
+  efficiency: AuctionEfficiencyAnalysis,
+  strongestArea: string,
+  weakestArea: string
+): string {
+  if (players.length === 0) {
+    return `${team.name} finished the auction without acquiring any players, leaving the franchise unable to field a competitive XI.`;
+  }
+
+  const retained = players.filter(p => p.isRetained);
+  const auctionBuys = players.filter(p => !p.isRetained);
+  const topRetained = [...retained].sort((a, b) => (b.rating || 75) - (a.rating || 75))[0];
+  const topBuy = [...auctionBuys].sort((a, b) => (b.rating || 75) - (a.rating || 75))[0];
+
+  const parts: string[] = [];
+
+  // Opening clause based on retained core + squad composition
+  const descriptors: string[] = [];
+  if (batting.score >= 80) descriptors.push('an explosive batting unit');
+  else if (batting.score >= 70) descriptors.push('a dependable batting lineup');
+  if (bowling.spinBowling >= 80) descriptors.push('a lethal spin attack');
+  if (bowling.paceBowling >= 80) descriptors.push('a high-velocity pace battery');
+  if (allRounderScore >= 80) descriptors.push('versatile all-rounders');
+  if (wicketkeepingScore >= 82) descriptors.push('elite wicketkeeping');
+  if (descriptors.length === 0) descriptors.push('a developing core');
+
+  parts.push(`${team.shortName} has assembled a ${squadBalance.score >= 75 ? 'well-balanced' : 'specialized'} ${players.length}-player squad featuring ${descriptors.slice(0, 3).join(', ')}.`);
+
+  if (topRetained && topBuy) {
+    parts.push(`Retaining ${topRetained.name} anchored their core, while auction signing ${topBuy.name} elevated their ${strongestArea.toLowerCase()}.`);
+  } else if (topRetained) {
+    parts.push(`Their retention of ${topRetained.name} provides proven stability as the centerpiece of the franchise.`);
+  } else if (topBuy) {
+    parts.push(`Led by marquee auction signing ${topBuy.name}, their recruitment focused on strengthening ${strongestArea.toLowerCase()}.`);
+  }
+
+  // Weakness / Efficiency caveat
+  if (players.length < 11) {
+    parts.push(`However, with only ${players.length} players signed, squad depth and ${weakestArea.toLowerCase()} remain major vulnerabilities.`);
+  } else if (efficiency.score >= 82) {
+    parts.push(`Smart budget discipline left them with high value per Crore spent, though ${weakestArea.toLowerCase()} warrants tactical attention.`);
+  } else {
+    parts.push(`However, ${weakestArea.toLowerCase()} remains a potential area of concern across a 14-match campaign.`);
+  }
+
+  return parts.join(' ');
 }
 
 /**
@@ -665,29 +780,46 @@ export function generateQualitativeReport(
 export function analyzeTeam(team: Team): TeamAnalysisReport {
   const players = team.purchasedPlayers || [];
   const squadSize = players.length;
+  const retainedPlayersList = players.filter(p => p.isRetained);
+  const auctionPurchasedList = players.filter(p => !p.isRetained);
+
+  const retainedCount = retainedPlayersList.length;
+  const auctionPurchasedCount = auctionPurchasedList.length;
+  const indianCount = players.filter(p => !p.isOverseas).length;
+  const overseasCount = players.filter(p => p.isOverseas).length;
 
   const batting = analyzeBatting(players);
   const bowling = analyzeBowling(players);
   const squadBalance = analyzeSquadBalance(players);
   const efficiency = analyzeAuctionEfficiency(team);
-
-  // Overall Score Calculation (Scale: 0 - 100)
-  const overallScore = clamp(
-    batting.score * 0.32 +
-    bowling.score * 0.32 +
-    squadBalance.score * 0.20 +
-    efficiency.score * 0.16
-  );
-
-  const ratingTier = getRatingTier(overallScore);
+  const allRounderScore = analyzeAllRounders(players);
+  const wicketkeepingScore = analyzeWicketkeeping(players);
 
   const {
     playingXI,
+    impactPlayer,
     captain,
     viceCaptain,
     suggestedBattingOrder,
     suggestedBowlingCombination
   } = recommendPlayingXI(players);
+
+  const benchStrengthScore = analyzeBenchStrength(players, playingXI);
+  const playingXIScore = analyzePlayingXIPotential(playingXI);
+
+  // Overall Score Calculation (Scale: 0 - 100, 1 decimal precision)
+  const rawOverall =
+    batting.score * 0.25 +
+    bowling.score * 0.25 +
+    allRounderScore * 0.10 +
+    wicketkeepingScore * 0.06 +
+    squadBalance.score * 0.12 +
+    benchStrengthScore * 0.06 +
+    playingXIScore * 0.08 +
+    efficiency.score * 0.08;
+  const overallScore = Math.max(0, Math.min(100, Math.round(rawOverall * 10) / 10));
+
+  const ratingTier = getRatingTier(overallScore);
 
   const {
     strengths,
@@ -695,6 +827,37 @@ export function analyzeTeam(team: Team): TeamAnalysisReport {
     improvementAreas,
     keyPlayers
   } = generateQualitativeReport(team, batting, bowling, squadBalance, efficiency, playingXI);
+
+  const retentionSpent = team.retentionSpent ?? retainedPlayersList.reduce((s, p) => s + (p.retentionCost || p.soldPrice || 0), 0);
+  const auctionSpent = Math.max(0, efficiency.totalSpent - retentionSpent);
+
+  const bestRetainedPlayer = [...retainedPlayersList].sort((a, b) => (b.rating || 75) - (a.rating || 75))[0] || null;
+  const bestAuctionPurchase = [...auctionPurchasedList].sort((a, b) => (b.rating || 75) - (a.rating || 75))[0] || null;
+  const biggestBargain = efficiency.mostValuableBuy;
+
+  const metricAreas = [
+    { label: 'Batting Strength', score: batting.score },
+    { label: 'Bowling Attack', score: bowling.score },
+    { label: 'All-Rounder Depth', score: allRounderScore },
+    { label: 'Wicketkeeping', score: wicketkeepingScore },
+    { label: 'Squad Balance', score: squadBalance.score },
+    { label: 'Playing XI Quality', score: playingXIScore }
+  ];
+  const strongestArea = [...metricAreas].sort((a, b) => b.score - a.score)[0]?.label || 'Balanced Core';
+  const weakestArea = [...metricAreas].sort((a, b) => a.score - b.score)[0]?.label || 'Bench Depth';
+
+  const aiNarrative = generateAINarrative(
+    team,
+    players,
+    batting,
+    bowling,
+    allRounderScore,
+    wicketkeepingScore,
+    squadBalance,
+    efficiency,
+    strongestArea,
+    weakestArea
+  );
 
   return {
     teamId: team.id,
@@ -704,17 +867,34 @@ export function analyzeTeam(team: Team): TeamAnalysisReport {
     primaryColor: team.primaryColor,
     ownerName: team.ownerName,
     squadSize,
+    retainedCount,
+    auctionPurchasedCount,
+    indianCount,
+    overseasCount,
     overallScore,
     ratingTier,
     batting,
     bowling,
+    allRounderScore,
+    wicketkeepingScore,
     squadBalance,
+    benchStrengthScore,
+    playingXIScore,
     efficiency,
+    retentionSpent,
+    auctionSpent,
+    bestRetainedPlayer,
+    bestAuctionPurchase,
+    biggestBargain,
+    strongestArea,
+    weakestArea,
+    aiNarrative,
     strengths,
     weaknesses,
     improvementAreas,
     keyPlayers,
     playingXI,
+    impactPlayer,
     captain,
     viceCaptain,
     suggestedBattingOrder,
@@ -728,18 +908,40 @@ export function analyzeTeam(team: Team): TeamAnalysisReport {
 export function analyzeTournament(teams: Team[]): TournamentComparison {
   const teamReports = teams.map(t => analyzeTeam(t));
 
-  // Sort overall rankings descending
-  const sortedReports = [...teamReports].sort((a, b) => b.overallScore - a.overallScore);
+  // Sort overall rankings descending (tie-break by Playing XI score, then remaining purse)
+  const sortedReports = [...teamReports].sort((a, b) => {
+    if (b.overallScore !== a.overallScore) return b.overallScore - a.overallScore;
+    if (b.playingXIScore !== a.playingXIScore) return b.playingXIScore - a.playingXIScore;
+    return b.efficiency.remainingPurse - a.efficiency.remainingPurse;
+  });
+
   const rankings = sortedReports.map((report, idx) => ({
     rank: idx + 1,
     teamId: report.teamId,
     teamShortName: report.teamShortName,
     teamName: report.teamName,
+    ownerName: report.ownerName,
     overallScore: report.overallScore,
+    battingScore: report.batting.score,
+    bowlingScore: report.bowling.score,
+    allRounderScore: report.allRounderScore,
+    squadBalanceScore: report.squadBalance.score,
+    playingXIScore: report.playingXIScore,
+    efficiencyScore: report.efficiency.score,
+    totalSpent: report.efficiency.totalSpent,
+    remainingPurse: report.efficiency.remainingPurse,
+    squadSize: report.squadSize,
+    retainedCount: report.retainedCount,
     tier: report.ratingTier,
     logo: report.teamLogo,
     primaryColor: report.primaryColor
   }));
+
+  const championReport = sortedReports[0] || teamReports[0];
+  const championTeamId = championReport?.teamId || 'MI';
+  const championReason = championReport
+    ? championReport.aiNarrative
+    : 'Ranked #1 based on overall squad rating and Playing XI balance.';
 
   // Best in specific categories
   const strongestBattingReport = [...teamReports].sort((a, b) => b.batting.score - a.batting.score)[0] || teamReports[0];
@@ -750,6 +952,8 @@ export function analyzeTournament(teams: Team[]): TournamentComparison {
   return {
     teamReports,
     rankings,
+    championTeamId,
+    championReason,
     strongestBattingTeam: {
       teamId: strongestBattingReport?.teamId || 'MI',
       teamShortName: strongestBattingReport?.teamShortName || 'MI',

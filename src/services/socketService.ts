@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import type { MultiplayerRoomState, BidRecord, MultiplayerResolvedLot, MultiplayerRoomSettings } from '../types';
+import type { MultiplayerRoomState, BidRecord, MultiplayerResolvedLot, MultiplayerRoomSettings, RetentionRules } from '../types';
 
 let socket: Socket | null = null;
 
@@ -450,6 +450,153 @@ export function startMultiplayerAuction(
       }
     });
   });
+}
+
+// 6B. START RETENTION STAGE (Host only)
+export function startRetentionStage(
+  timeoutMs: number = 6000
+): Promise<{ success: boolean; room?: MultiplayerRoomState; error?: string }> {
+  return new Promise((resolve) => {
+    const s = getSocket();
+    let resolved = false;
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve({ success: false, error: 'Start retention request timed out.' });
+      }
+    }, timeoutMs);
+
+    s.emit('start_retention', (res: { success: boolean; room?: MultiplayerRoomState; error?: string }) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        resolve(res);
+      }
+    });
+  });
+}
+
+// 6C. UPDATE RETENTION RULES (Host only)
+export function updateRetentionRules(
+  rules: Partial<RetentionRules>,
+  timeoutMs: number = 5000
+): Promise<{ success: boolean; retentionRules?: RetentionRules; error?: string }> {
+  return new Promise((resolve) => {
+    const s = getSocket();
+    let resolved = false;
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve({ success: false, error: 'Update retention rules timed out.' });
+      }
+    }, timeoutMs);
+
+    s.emit('update_retention_rules', rules, (res: { success: boolean; retentionRules?: RetentionRules; error?: string }) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        resolve(res);
+      }
+    });
+  });
+}
+
+// 6D. SUBMIT TEAM RETENTION (Team Owner)
+export async function submitMultiplayerRetention(
+  payload: { roomCode?: string; playerId?: string; teamId?: string; playerIds: string[] },
+  timeoutMs: number = 6000
+): Promise<{ success: boolean; teamId?: string; totalCost?: number; remainingPurse?: number; room?: MultiplayerRoomState; error?: string }> {
+  try {
+    const s = getSocket();
+    await ensureSocketConnected(3000);
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ success: false, error: 'Retention submission timed out.' });
+        }
+      }, timeoutMs);
+
+      s.emit('submit_retention', payload, (res: { success: boolean; teamId?: string; totalCost?: number; remainingPurse?: number; room?: MultiplayerRoomState; error?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res);
+        }
+      });
+    });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error submitting retention.' };
+  }
+}
+
+// 6E. CLOSE & FINALIZE AUCTION (Host only)
+export async function closeMultiplayerAuction(
+  payload?: { roomCode?: string; playerId?: string },
+  timeoutMs: number = 6000
+): Promise<{ success: boolean; room?: MultiplayerRoomState; error?: string }> {
+  try {
+    const s = getSocket();
+    await ensureSocketConnected(3000);
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ success: false, error: 'Close auction request timed out.' });
+        }
+      }, timeoutMs);
+
+      s.emit('close_auction', payload || {}, (res: { success: boolean; room?: MultiplayerRoomState; error?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res);
+        }
+      });
+    });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error finalizing auction.' };
+  }
+}
+
+// 6F. RESUME AUCTION BATCH (Host only)
+export async function resumeMultiplayerAuction(
+  payload?: { roomCode?: string; playerId?: string },
+  timeoutMs: number = 6000
+): Promise<{ success: boolean; room?: MultiplayerRoomState; error?: string }> {
+  try {
+    const s = getSocket();
+    await ensureSocketConnected(3000);
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const timer = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ success: false, error: 'Resume auction request timed out.' });
+        }
+      }, timeoutMs);
+
+      s.emit('resume_auction', payload || {}, (res: { success: boolean; room?: MultiplayerRoomState; error?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          resolve(res);
+        }
+      });
+    });
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error resuming auction.' };
+  }
 }
 
 export interface PlaceBidPayload {

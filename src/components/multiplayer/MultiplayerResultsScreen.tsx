@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
-import { Trophy, Download, Plane, ArrowLeft, ChevronDown, Sparkles, BarChart3 } from 'lucide-react';
+import { Trophy, Download, Plane, ArrowLeft, ChevronDown, Sparkles, BarChart3, Play } from 'lucide-react';
 import type { MultiplayerRoomState } from '../../types';
 import { formatCurrency } from '../../utils/currencyUtils';
 import { getPlayerFallbackSilhouette, getTeamFallbackLogo } from '../../utils/imageUtils';
 import { TeamAnalysisDashboard } from '../analysis/TeamAnalysisDashboard';
 import { TournamentComparisonView } from '../analysis/TournamentComparisonView';
+import { AuctionChampionBanner } from '../analysis/AuctionChampionBanner';
+import { analyzeTournament } from '../../engine/teamAnalysisEngine';
+import { resumeMultiplayerAuction } from '../../services/socketService';
 
 interface MultiplayerResultsScreenProps {
   room: MultiplayerRoomState;
@@ -19,9 +22,20 @@ export const MultiplayerResultsScreen: React.FC<MultiplayerResultsScreenProps> =
 }) => {
   const me = room.players.find(p => p.id === currentUserId);
   const myTeamId = me?.teamId;
-  const [activeTab, setActiveTab] = useState<'aiAnalysis' | 'comparison' | 'teams' | 'topBuys' | 'unsold'>('aiAnalysis');
+  const isHost = me?.isHost || false;
+  const [activeTab, setActiveTab] = useState<'champion' | 'aiAnalysis' | 'comparison' | 'teams' | 'topBuys' | 'unsold'>('champion');
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(myTeamId || null);
   const [inspectedTeamId, setInspectedTeamId] = useState<string>(myTeamId || room.teams[0]?.id || 'MI');
+  const [isResuming, setIsResuming] = useState(false);
+
+  const upcomingCount = room.playerPool.filter(p => p.status === 'upcoming').length;
+  const finalComparison = room.finalResults || analyzeTournament(room.teams);
+
+  const handleResumeAuction = async () => {
+    setIsResuming(true);
+    await resumeMultiplayerAuction({ roomCode: room.roomCode, playerId: currentUserId });
+    setIsResuming(false);
+  };
 
   const soldPlayers = room.playerPool.filter(p => p.status === 'sold');
   const unsoldPlayers = room.playerPool.filter(p => p.status === 'unsold');
@@ -96,7 +110,18 @@ export const MultiplayerResultsScreen: React.FC<MultiplayerResultsScreenProps> =
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {isHost && upcomingCount > 0 && (
+            <button
+              onClick={handleResumeAuction}
+              disabled={isResuming}
+              className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-amber-500/20 transition cursor-pointer disabled:opacity-60"
+            >
+              <Play className="w-4 h-4 fill-current" />
+              <span>{isResuming ? 'Resuming...' : `Resume Auction (${upcomingCount} Left)`}</span>
+            </button>
+          )}
+
           <button
             onClick={handleExportCSV}
             className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-emerald-500/20 transition cursor-pointer"
@@ -170,25 +195,36 @@ export const MultiplayerResultsScreen: React.FC<MultiplayerResultsScreenProps> =
       {/* Navigation Tabs */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3 mb-6">
         <button
+          onClick={() => setActiveTab('champion')}
+          className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center gap-2 cursor-pointer ${activeTab === 'champion'
+              ? 'bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20'
+              : 'bg-slate-900 hover:bg-slate-800 text-slate-300'
+            }`}
+        >
+          <Trophy className="w-3.5 h-3.5" />
+          <span>Champion &amp; Rankings</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('aiAnalysis')}
           className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center gap-2 cursor-pointer ${activeTab === 'aiAnalysis'
               ? 'bg-gradient-to-r from-cyan-400 to-teal-400 text-slate-950 font-black shadow-lg shadow-cyan-500/20'
               : 'bg-slate-900 hover:bg-slate-800 text-slate-300'
             }`}
         >
-          <Sparkles className="w-3.5 h-3.5 text-slate-950" />
+          <Sparkles className="w-3.5 h-3.5" />
           <span>AI Team Evaluation</span>
         </button>
 
         <button
           onClick={() => setActiveTab('comparison')}
           className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center gap-2 cursor-pointer ${activeTab === 'comparison'
-              ? 'bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20'
+              ? 'bg-gradient-to-r from-indigo-400 to-cyan-400 text-slate-950 font-black shadow-lg shadow-cyan-500/20'
               : 'bg-slate-900 hover:bg-slate-800 text-slate-300'
             }`}
         >
-          <BarChart3 className="w-3.5 h-3.5 text-slate-950" />
-          <span>Power Rankings & Comparison</span>
+          <BarChart3 className="w-3.5 h-3.5" />
+          <span>Power Comparison</span>
         </button>
 
         <button
@@ -221,6 +257,17 @@ export const MultiplayerResultsScreen: React.FC<MultiplayerResultsScreenProps> =
           Unsold Lots ({unsoldPlayers.length})
         </button>
       </div>
+
+      {/* Tab 0: Auction Champion & Complete Rankings */}
+      {activeTab === 'champion' && (
+        <AuctionChampionBanner
+          comparison={finalComparison}
+          onSelectTeamToInspect={(teamId) => {
+            setInspectedTeamId(teamId);
+            setActiveTab('aiAnalysis');
+          }}
+        />
+      )}
 
       {/* Tab 1: AI Team Analysis Dashboard */}
       {activeTab === 'aiAnalysis' && (

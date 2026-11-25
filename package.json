@@ -11,7 +11,7 @@
     "dev:all": "concurrently -k -n \"SERVER,VITE\" -c \"cyan.bold,green.bold\" \"tsx server/index.ts\" \"vite\"",
     "build": "tsc -b && vite build",
     "build:client": "vite build",
-    "test": "tsx test/auctionEngine.test.ts && tsx test/multiplayerEngine.test.ts && tsx test/stage3TeamClaim.test.ts && tsx test/stage4AiTeamAnalysis.test.ts && tsx test/setAndSkipOptions.test.ts && tsx test/opponentBidding.test.ts",
+    "test": "tsx test/auctionEngine.test.ts && tsx test/multiplayerEngine.test.ts && tsx test/stage3TeamClaim.test.ts && tsx test/stage4AiTeamAnalysis.test.ts && tsx test/setAndSkipOptions.test.ts && tsx test/opponentBidding.test.ts && tsx test/retentionAndRanking.test.ts",
     "lint": "oxlint",
     "preview": "vite preview"
   },

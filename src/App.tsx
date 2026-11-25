@@ -20,6 +20,11 @@ import {
   setMuted
 } from './utils/soundUtils';
 import { updateTeamPurchasedPlayer, validateBid } from './engine/squadRules';
+import {
+  DEFAULT_RETENTION_RULES,
+  validateRetentionSelection,
+  applyTeamRetention
+} from './engine/retentionEngine';
 import { subscribeToRoomEvents, reconnectMultiplayerPlayer } from './services/socketService';
 
 import { Navbar } from './components/Navbar';
@@ -34,10 +39,12 @@ import { UnsoldOverlay } from './components/UnsoldOverlay';
 import { SquadModal } from './components/SquadModal';
 import { RulesModal } from './components/RulesModal';
 import { AuctionResultsScreen } from './components/AuctionResultsScreen';
+import { SingleplayerRetentionScreen } from './components/SingleplayerRetentionScreen';
 
 // Multiplayer Components
 import { MultiplayerEntryScreen } from './components/multiplayer/MultiplayerEntryScreen';
 import { MultiplayerLobbyScreen } from './components/multiplayer/MultiplayerLobbyScreen';
+import { MultiplayerRetentionScreen } from './components/multiplayer/MultiplayerRetentionScreen';
 import { MultiplayerAuctionScreen } from './components/multiplayer/MultiplayerAuctionScreen';
 import { MultiplayerResultsScreen } from './components/multiplayer/MultiplayerResultsScreen';
 
@@ -101,9 +108,42 @@ export function App() {
     setIsMutedState(nextMute);
   };
 
-  // Start singleplayer auction after franchise confirmation
+  // Start singleplayer retention after franchise confirmation
   const handleConfirmTeam = (chosenTeamId: string) => {
     setUserTeamId(chosenTeamId);
+    setScreen('retention');
+  };
+
+  const handleConfirmSingleplayerRetention = (selectedIds: string[]) => {
+    const targetTeam = teams.find(t => t.id === userTeamId);
+    if (!targetTeam) return;
+
+    const val = validateRetentionSelection(targetTeam, selectedIds, players, DEFAULT_RETENTION_RULES);
+    if (!val.isValid) return;
+
+    const { updatedTeam, updatedPlayerPool } = applyTeamRetention(targetTeam, val.items, players);
+    setTeams(prev => prev.map(t => (t.id === updatedTeam.id ? updatedTeam : t)));
+    setPlayers(updatedPlayerPool);
+
+    const firstUpcomingIdx = Math.max(0, updatedPlayerPool.findIndex(p => p.status === 'upcoming'));
+    setCurrentPlayerIndex(firstUpcomingIdx);
+    setScreen('auction');
+    const firstPlayer = updatedPlayerPool[firstUpcomingIdx];
+    if (firstPlayer) {
+      isResolvingRef.current = false;
+      setCurrentBid(0);
+      currentBidRef.current = 0;
+      setHighestBidderTeamId(null);
+      highestBidderTeamIdRef.current = null;
+      setBidHistory([]);
+      setCountdown(AUCTION_TIMER_SECONDS);
+      setSoldModalData(null);
+      setUnsoldModalData(null);
+      setAuctioneerCall(`Lot #${firstPlayer.id} • ${firstPlayer.name} on the podium! 15s timer started. Base price: ${formatCurrency(firstPlayer.basePrice)}.`);
+    }
+  };
+
+  const handleSkipSingleplayerRetention = () => {
     setScreen('auction');
     setCurrentPlayerIndex(0);
     resetLot(0);
@@ -446,6 +486,16 @@ export function App() {
               />
             )}
 
+            {screen === 'retention' && (
+              <SingleplayerRetentionScreen
+                team={userTeam}
+                players={players}
+                onConfirmAndStartAuction={handleConfirmSingleplayerRetention}
+                onSkipRetention={handleSkipSingleplayerRetention}
+                onBackToTeamSelection={() => setScreen('selection')}
+              />
+            )}
+
             {screen === 'auction' && (
               <div className="flex-1 max-w-7xl w-full mx-auto p-3 md:p-4 flex flex-col gap-4">
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 flex-1">
@@ -524,6 +574,12 @@ export function App() {
               />
             ) : multiplayerRoom.status === 'waiting' || multiplayerRoom.status === 'ready' ? (
               <MultiplayerLobbyScreen
+                room={multiplayerRoom}
+                currentUserId={multiplayerPlayerId || ''}
+                onLeaveRoom={handleLeaveMultiplayerRoom}
+              />
+            ) : multiplayerRoom.status === 'retention' ? (
+              <MultiplayerRetentionScreen
                 room={multiplayerRoom}
                 currentUserId={multiplayerPlayerId || ''}
                 onLeaveRoom={handleLeaveMultiplayerRoom}

@@ -147,6 +147,11 @@ export const SquadModal: React.FC<SquadModalProps> = ({
                       <div className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                         <span>{player.name}</span>
                         {player.isOverseas && <Plane className="w-3 h-3 text-sky-400" />}
+                        {player.isRetained && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[9px] font-black uppercase">
+                            Retained
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] text-slate-400">
                         {player.role} • {player.category}

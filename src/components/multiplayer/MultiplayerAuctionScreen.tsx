@@ -10,7 +10,8 @@ import {
   Sparkles,
   CheckCircle2,
   Users,
-  Crown
+  Crown,
+  Flag
 } from 'lucide-react';
 import type { MultiplayerRoomState, PlayerCategory } from '../../types';
 import { formatCurrency, getNextBidAmount } from '../../utils/currencyUtils';
@@ -19,7 +20,8 @@ import {
   placeMultiplayerBid,
   advanceMultiplayerLot,
   skipMultiplayerSet,
-  toggleMultiplayerPause
+  toggleMultiplayerPause,
+  closeMultiplayerAuction
 } from '../../services/socketService';
 import { QueueBottomPanel } from '../QueueBottomPanel';
 import { SoldOverlay } from '../SoldOverlay';
@@ -170,6 +172,21 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
     }
   };
 
+  // Host closes and finalizes auction
+  const handleCloseAuction = async () => {
+    if (!window.confirm('Close and finalize the auction now? This will stop all bidding and generate final AI team rankings.')) {
+      return;
+    }
+    setBidError(null);
+    const res = await closeMultiplayerAuction({
+      roomCode: room.roomCode,
+      playerId: effectiveUserId || me?.id
+    });
+    if (!res.success) {
+      setBidError(res.error || 'Failed to close auction.');
+    }
+  };
+
   const upcomingPlayers = room.playerPool.filter((p, idx) => idx > room.currentPlayerIndex && p.status === 'upcoming');
 
   return (
@@ -255,6 +272,14 @@ export const MultiplayerAuctionScreen: React.FC<MultiplayerAuctionScreenProps> =
             >
               <FastForward className="w-3.5 h-3.5 text-amber-400" />
               <span className="hidden md:inline">Skip Set</span>
+            </button>
+            <button
+              onClick={handleCloseAuction}
+              className="px-2.5 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 hover:text-white border border-rose-700/60 text-xs font-bold flex items-center gap-1 transition cursor-pointer"
+              title="Close & Finalize Auction"
+            >
+              <Flag className="w-3.5 h-3.5 text-rose-400" />
+              <span className="hidden md:inline">Close Auction</span>
             </button>
           </div>
         )}

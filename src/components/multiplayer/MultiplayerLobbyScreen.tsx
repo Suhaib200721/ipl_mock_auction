@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Copy, Check, Crown, Users, AlertCircle, CheckCircle2, LogOut, Shield, Lock, Undo2, Sparkles, Play } from 'lucide-react';
+import { Copy, Check, Crown, Users, AlertCircle, CheckCircle2, LogOut, Shield, Lock, Undo2, Sparkles, Play, ShieldCheck } from 'lucide-react';
 import type { MultiplayerRoomState } from '../../types';
 import { formatCurrency } from '../../utils/currencyUtils';
 import { getTeamFallbackLogo } from '../../utils/imageUtils';
@@ -8,7 +8,8 @@ import {
   releaseMultiplayerTeam,
   toggleMultiplayerReady,
   leaveMultiplayerRoom,
-  startMultiplayerAuction
+  startMultiplayerAuction,
+  startRetentionStage
 } from '../../services/socketService';
 
 interface MultiplayerLobbyScreenProps {
@@ -44,6 +45,16 @@ export const MultiplayerLobbyScreen: React.FC<MultiplayerLobbyScreenProps> = ({
     const res = await startMultiplayerAuction();
     if (!res.success) {
       setErrorMessage(res.error || 'Failed to start auction.');
+      setIsStarting(false);
+    }
+  };
+
+  const handleStartRetention = async () => {
+    setIsStarting(true);
+    setErrorMessage(null);
+    const res = await startRetentionStage();
+    if (!res.success) {
+      setErrorMessage(res.error || 'Failed to enter retention stage.');
       setIsStarting(false);
     }
   };
@@ -274,31 +285,45 @@ export const MultiplayerLobbyScreen: React.FC<MultiplayerLobbyScreenProps> = ({
 
           {/* User Controls & Stage 3 Status */}
           <div className="pt-6 border-t border-slate-800 mt-6 space-y-3">
-            {/* Host Start Auction Button or Waiting Message */}
+            {/* Host Start Retention / Start Auction Buttons or Waiting Message */}
             {isHost ? (
-              <button
-                type="button"
-                disabled={!canStart || isStarting}
-                onClick={handleStartAuction}
-                className={`w-full py-3.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 shadow-xl transition-all cursor-pointer ${
-                  canStart && !isStarting
-                    ? 'bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-500 hover:from-emerald-400 hover:to-teal-300 text-slate-950 shadow-emerald-500/25 scale-100 hover:scale-[1.02]'
-                    : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60'
-                }`}
-              >
-                <Play className="w-4 h-4 fill-current" />
-                <span>
-                  {!hasHostClaimedTeam
-                    ? 'Claim a Team to Start'
-                    : unassignedPlayers.length > 0
-                    ? `Waiting for ${unassignedPlayers[0].name} to pick team`
-                    : isStarting
-                    ? 'Launching Auction...'
-                    : room.players.length === 1
-                    ? 'Start Auction (Single Player)'
-                    : `Start Auction (${room.players.length} Managers)`}
-                </span>
-              </button>
+              <div className="space-y-2.5">
+                <button
+                  type="button"
+                  disabled={!canStart || isStarting}
+                  onClick={handleStartRetention}
+                  className={`w-full py-3.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 shadow-xl transition-all cursor-pointer ${
+                    canStart && !isStarting
+                      ? 'bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-slate-950 shadow-amber-500/25'
+                      : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed opacity-60'
+                  }`}
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>
+                    {!hasHostClaimedTeam
+                      ? 'Claim a Team to Start'
+                      : unassignedPlayers.length > 0
+                      ? `Waiting for ${unassignedPlayers[0].name} to pick team`
+                      : isStarting
+                      ? 'Loading...'
+                      : 'Enter Retention Stage'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!canStart || isStarting}
+                  onClick={handleStartAuction}
+                  className={`w-full py-2.5 rounded-xl text-[11px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 border transition-all cursor-pointer ${
+                    canStart && !isStarting
+                      ? 'bg-slate-950 hover:bg-slate-800 text-emerald-400 border-emerald-500/30'
+                      : 'bg-slate-900 text-slate-600 border-slate-800 cursor-not-allowed opacity-60'
+                  }`}
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Skip Retention &amp; Start Auction</span>
+                </button>
+              </div>
             ) : (
               <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-center text-xs text-slate-400">
                 Waiting for host <strong className="text-slate-200">{room.players.find(p => p.isHost)?.name}</strong> to launch the auction.

@@ -5,6 +5,8 @@ import { getPlayerFallbackSilhouette, getTeamFallbackLogo } from '../utils/image
 import { Trophy, Download, RotateCcw, Plane, ArrowLeft, ChevronDown, Sparkles, BarChart3 } from 'lucide-react';
 import { TeamAnalysisDashboard } from './analysis/TeamAnalysisDashboard';
 import { TournamentComparisonView } from './analysis/TournamentComparisonView';
+import { AuctionChampionBanner } from './analysis/AuctionChampionBanner';
+import { analyzeTournament } from '../engine/teamAnalysisEngine';
 
 interface AuctionResultsScreenProps {
   teams: Team[];
@@ -21,9 +23,11 @@ export const AuctionResultsScreen: React.FC<AuctionResultsScreenProps> = ({
   onBackToAuction,
   onRestartAuction
 }) => {
-  const [activeTab, setActiveTab] = useState<'aiAnalysis' | 'comparison' | 'teams' | 'topBuys' | 'unsold'>('aiAnalysis');
+  const [activeTab, setActiveTab] = useState<'champion' | 'aiAnalysis' | 'comparison' | 'teams' | 'topBuys' | 'unsold'>('champion');
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(userTeamId);
   const [inspectedTeamId, setInspectedTeamId] = useState<string>(userTeamId);
+
+  const finalComparison = analyzeTournament(teams);
 
   // Calculate sold players and top buys
   const soldPlayers = players.filter(p => p.status === 'sold');
@@ -183,14 +187,26 @@ export const AuctionResultsScreen: React.FC<AuctionResultsScreenProps> = ({
       {/* Navigation Tabs */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3 mb-6">
         <button
-          onClick={() => setActiveTab('aiAnalysis')}
+          onClick={() => setActiveTab('champion')}
           className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center gap-2 cursor-pointer ${
-            activeTab === 'aiAnalysis'
+            activeTab === 'champion'
               ? 'bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-black shadow-lg shadow-amber-500/20'
               : 'bg-slate-900 hover:bg-slate-800 text-slate-300'
           }`}
         >
-          <Sparkles className="w-3.5 h-3.5 text-slate-950" />
+          <Trophy className="w-3.5 h-3.5" />
+          <span>Champion &amp; Rankings</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('aiAnalysis')}
+          className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition flex items-center gap-2 cursor-pointer ${
+            activeTab === 'aiAnalysis'
+              ? 'bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950 font-black shadow-lg shadow-cyan-500/20'
+              : 'bg-slate-900 hover:bg-slate-800 text-slate-300'
+          }`}
+        >
+          <Sparkles className="w-3.5 h-3.5" />
           <span>AI Team Evaluation</span>
         </button>
 
@@ -239,6 +255,17 @@ export const AuctionResultsScreen: React.FC<AuctionResultsScreenProps> = ({
           Unsold ({unsoldPlayers.length})
         </button>
       </div>
+
+      {/* Tab 0: Auction Champion & Complete Rankings */}
+      {activeTab === 'champion' && (
+        <AuctionChampionBanner
+          comparison={finalComparison}
+          onSelectTeamToInspect={(teamId) => {
+            setInspectedTeamId(teamId);
+            setActiveTab('aiAnalysis');
+          }}
+        />
+      )}
 
       {/* Tab 1: AI Team Analysis Dashboard */}
       {activeTab === 'aiAnalysis' && (

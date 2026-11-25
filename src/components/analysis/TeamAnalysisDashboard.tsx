@@ -148,14 +148,16 @@ export const TeamAnalysisDashboard: React.FC<TeamAnalysisDashboardProps> = ({
                 {selectedTeam.name}
               </h2>
 
-              <p className="text-slate-400 text-xs md:text-sm mt-1 max-w-xl">
-                {selectedTeam.strategyBio}
+              <p className="text-slate-300 text-xs md:text-sm mt-2 max-w-2xl leading-relaxed">
+                {report.aiNarrative}
               </p>
 
-              <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-slate-300">
-                <span>Squad: <strong className="text-white">{report.squadSize}</strong> players</span>
+              <div className="flex flex-wrap items-center gap-3 mt-3 text-xs text-slate-300">
+                <span>Squad: <strong className="text-white">{report.squadSize}</strong> ({report.retainedCount} Retained, {report.auctionPurchasedCount} Bought)</span>
                 <span>•</span>
-                <span>Spent: <strong className="text-white">{formatCurrency(report.efficiency.totalSpent)}</strong></span>
+                <span>Retention: <strong className="text-amber-300">{formatCurrency(report.retentionSpent)}</strong></span>
+                <span>•</span>
+                <span>Auction: <strong className="text-cyan-300">{formatCurrency(report.auctionSpent)}</strong></span>
                 <span>•</span>
                 <span>Remaining: <strong className="text-emerald-400">{formatCurrency(report.efficiency.remainingPurse)}</strong></span>
               </div>
@@ -165,13 +167,14 @@ export const TeamAnalysisDashboard: React.FC<TeamAnalysisDashboardProps> = ({
           {/* Overall Performance Score Badge */}
           <div className="flex flex-col items-center justify-center bg-slate-950/80 border border-slate-800 rounded-2xl p-5 md:px-8 shadow-xl flex-shrink-0 text-center">
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">
-              OVERALL PERFORMANCE
+              OVERALL RATING
             </span>
 
             <div className="flex items-baseline gap-1 my-1">
               <span className="text-4xl md:text-5xl font-black tracking-tight text-gold-gradient">
-                {report.overallScore}%
+                {report.overallScore}
               </span>
+              <span className="text-sm font-bold text-slate-500">/100</span>
             </div>
 
             <span className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border mt-1.5 ${getTierBadgeClass(report.ratingTier)}`}>
@@ -180,75 +183,31 @@ export const TeamAnalysisDashboard: React.FC<TeamAnalysisDashboardProps> = ({
           </div>
         </div>
 
-        {/* 4 Core Pillars Score Bar */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8 pt-6 border-t border-slate-800/80">
-          {/* Batting Strength */}
-          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5">
-            <div className="flex items-center justify-between text-xs font-bold mb-1.5">
-              <span className="text-slate-400 flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
-                <span>Batting Strength</span>
-              </span>
-              <span className="text-amber-400 font-mono text-sm">{report.batting.score}%</span>
+        {/* Extended 8-Metric Score Breakdown Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-8 pt-6 border-t border-slate-800/80">
+          {[
+            { label: 'Batting', val: report.batting.score, color: 'text-amber-400' },
+            { label: 'Bowling', val: report.bowling.score, color: 'text-cyan-400' },
+            { label: 'All-Rounders', val: report.allRounderScore, color: 'text-emerald-400' },
+            { label: 'Wicketkeeping', val: report.wicketkeepingScore, color: 'text-sky-400' },
+            { label: 'Squad Balance', val: report.squadBalance.score, color: 'text-teal-400' },
+            { label: 'Bench Strength', val: report.benchStrengthScore, color: 'text-purple-400' },
+            { label: 'Playing XI', val: report.playingXIScore, color: 'text-amber-300' },
+            { label: 'Auction Efficiency', val: report.efficiency.score, color: 'text-indigo-400' }
+          ].map(metric => (
+            <div key={metric.label} className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3">
+              <div className="flex items-center justify-between text-xs font-bold mb-1.5">
+                <span className="text-slate-400">{metric.label}</span>
+                <span className={`${metric.color} font-mono text-sm`}>{metric.val}/100</span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                <div
+                  className={`h-full bg-gradient-to-r ${getScoreBarColor(metric.val)} rounded-full`}
+                  style={{ width: `${metric.val}%` }}
+                />
+              </div>
             </div>
-            <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className={`h-full bg-gradient-to-r ${getScoreBarColor(report.batting.score)} rounded-full`}
-                style={{ width: `${report.batting.score}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Bowling Strength */}
-          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5">
-            <div className="flex items-center justify-between text-xs font-bold mb-1.5">
-              <span className="text-slate-400 flex items-center gap-1.5">
-                <Target className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Bowling Strength</span>
-              </span>
-              <span className="text-cyan-400 font-mono text-sm">{report.bowling.score}%</span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className={`h-full bg-gradient-to-r ${getScoreBarColor(report.bowling.score)} rounded-full`}
-                style={{ width: `${report.bowling.score}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Squad Balance */}
-          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5">
-            <div className="flex items-center justify-between text-xs font-bold mb-1.5">
-              <span className="text-slate-400 flex items-center gap-1.5">
-                <Shield className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Squad Balance</span>
-              </span>
-              <span className="text-emerald-400 font-mono text-sm">{report.squadBalance.score}%</span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className={`h-full bg-gradient-to-r ${getScoreBarColor(report.squadBalance.score)} rounded-full`}
-                style={{ width: `${report.squadBalance.score}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Auction Efficiency */}
-          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3.5">
-            <div className="flex items-center justify-between text-xs font-bold mb-1.5">
-              <span className="text-slate-400 flex items-center gap-1.5">
-                <DollarSign className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Auction Efficiency</span>
-              </span>
-              <span className="text-indigo-400 font-mono text-sm">{report.efficiency.score}%</span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className={`h-full bg-gradient-to-r ${getScoreBarColor(report.efficiency.score)} rounded-full`}
-                style={{ width: `${report.efficiency.score}%` }}
-              />
-            </div>
-          </div>
+          ))}
         </div>
       </div>
 
@@ -553,6 +512,26 @@ export const TeamAnalysisDashboard: React.FC<TeamAnalysisDashboardProps> = ({
               ))}
             </div>
           </div>
+
+          {/* Impact Player Recommendation */}
+          {report.impactPlayer && (
+            <div className="bg-slate-900/90 border border-amber-500/30 rounded-2xl p-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className="px-2.5 py-1 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px] font-black uppercase tracking-wider">
+                  IMPACT PLAYER SUB
+                </span>
+                <div>
+                  <div className="text-sm font-bold text-slate-100">{report.impactPlayer.name}</div>
+                  <div className="text-xs text-slate-400">
+                    {report.impactPlayer.role} • {report.impactPlayer.isOverseas ? 'Overseas' : 'Indian'}
+                  </div>
+                </div>
+              </div>
+              <div className="text-sm font-mono font-black text-amber-400">
+                Rating {report.impactPlayer.rating}
+              </div>
+            </div>
+          )}
 
           {/* Bowling Combinations by Phase */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

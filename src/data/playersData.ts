@@ -1,11 +1,12 @@
 import type { Player } from '../types';
+import { EXPANDED_PLAYERS } from './expandedPlayersData';
 
 /**
  * IPL 2027 Mock Auction Comprehensive Player Pool
  * Unofficial simulation dataset referencing real historical IPL player profiles,
  * roles, verifiable styles and base price tiers.
  */
-export const INITIAL_PLAYERS: Player[] = [
+const CORE_PLAYERS: Player[] = [
   // ==========================================
   // 1. MARQUEE SET (16 Players)
   // ==========================================
@@ -1835,3 +1836,5 @@ export const INITIAL_PLAYERS: Player[] = [
     status: 'upcoming'
   }
 ];
+
+export const INITIAL_PLAYERS: Player[] = [...CORE_PLAYERS, ...EXPANDED_PLAYERS];

@@ -20,8 +20,16 @@ for (const cat of expectedCategories) {
   console.log(`✓ Set "${cat}": ${sets[cat].length} players present`);
 }
 
-console.assert(INITIAL_PLAYERS.length === 113, `Expected 113 players, found ${INITIAL_PLAYERS.length}`);
-console.log(`✓ All ${INITIAL_PLAYERS.length} players intact across all 5 official auction sets.\n`);
+console.assert(INITIAL_PLAYERS.length >= 250, `Expected expanded pool >= 250 players, found ${INITIAL_PLAYERS.length}`);
+const seenIds = new Set<string>();
+const seenNames = new Set<string>();
+for (const p of INITIAL_PLAYERS) {
+  console.assert(!seenIds.has(p.id), `Duplicate player ID found: ${p.id}`);
+  console.assert(!seenNames.has(p.name.toLowerCase()), `Duplicate player name found: ${p.name}`);
+  seenIds.add(p.id);
+  seenNames.add(p.name.toLowerCase());
+}
+console.log(`✓ All ${INITIAL_PLAYERS.length} unique players intact across all 5 official auction sets.\n`);
 
 // 2. Simulate "Skip Current Player" Logic
 console.log('Test 2: Verify "Skip Current Player" Logic');
